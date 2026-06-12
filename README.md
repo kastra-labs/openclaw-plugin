@@ -1,4 +1,4 @@
-# @kastra/openclaw
+# @kastra_labs/openclaw
 
 Kastra AI governance for [OpenClaw](https://github.com/openclaw/openclaw): every tool
 call is evaluated against your Kastra tenant policies — **allow**, **block**, or
@@ -10,7 +10,7 @@ send an email until you tap **Approve** on your Mac.
 ## Install
 
 ```bash
-openclaw plugins install npm:@kastra/openclaw
+openclaw plugins install npm:@kastra_labs/openclaw
 ```
 
 Then raise the hook budget so holds can wait for a human (OpenClaw caps hook

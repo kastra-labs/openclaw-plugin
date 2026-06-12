@@ -1,5 +1,5 @@
 {
-  "name": "@kastra/openclaw",
+  "name": "@kastra_labs/openclaw",
   "version": "0.1.0",
   "type": "module",
   "description": "Kastra AI governance for OpenClaw — policy-enforced tool calls with human-in-the-loop holds",
