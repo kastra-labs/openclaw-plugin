@@ -90,17 +90,29 @@ describe("waitForCheckpoint", () => {
   //
   // OLD code: deadline = min(1_000_000 + 540_000, Date.parse(expires_at))
   //                    = min(1_540_000, 1_005_000) = 1_005_000.
-  //   With pollMs=5_000, first poll at t=1_000_000 → pending, sleep → t=1_005_000,
-  //   second loop: poll → pending, deadline check: 1_005_000 >= 1_005_000 → DENY.
+  //   Polls at t=1_000_000 → pending, sleep → t=1_005_000.
+  //   Second iteration: poll (still pending) → deadline check 1_005_000 >= 1_005_000 → DENY.
+  //   Even a last-chance read at t=1_005_000 sees pending → falls through to DENY.
   //
-  // NEW code (skew-corrected): TTL = 60_000ms. deadline = 1_000_000 + min(540_000, 60_000+30_000)
-  //                                             = 1_000_000 + 90_000 = 1_090_000.
-  //   First poll → pending, sleep → t=1_005_000, second poll → approved → ALLOW. ✓
+  // NEW code (skew-corrected): TTL = 60_000ms.
+  //   deadline = 1_000_000 + min(540_000, max(0, 60_000) + 30_000)
+  //            = 1_000_000 + 90_000 = 1_090_000.
+  //   Polls at t=1_000_000 → pending, sleep → t=1_005_000.
+  //   Second iteration: poll at t=1_005_000 → pending (t ≤ 1_010_000 flip point),
+  //   sleep → t=1_010_000. Third iteration: poll at t=1_010_000 → t > 1_005_000
+  //   so now returns approved ALLOW → returned immediately, deadline never hit.
+  //
+  // The approval flip point (t > 1_005_000, i.e. t > oldDeadline) ensures:
+  //   - Under OLD code: any read at t ≤ 1_005_000 still sees pending → DENY via on_timeout.
+  //   - Under NEW code: the poll at t=1_010_000 (after sleep past flip point) → ALLOW.
   it("server_now skew correction — uses server TTL not raw expires_at (Fix 1)", async () => {
-    // Clock starts at t=1_000_000 so that Date.parse(expires_at)=1_005_000 is "5s in the future"
+    // Clock starts at t=1_000_000 so that Date.parse(expires_at)=1_005_000 is only 5s ahead,
     // but the server-intended TTL is 60s.
     const expiresAtMs = 1_005_000;
-    const serverNowMs = 945_000; // TTL = 60_000
+    const serverNowMs = 945_000; // TTL = expiresAtMs − serverNowMs = 60_000ms
+    // OLD deadline = min(1_000_000 + 540_000, 1_005_000) = 1_005_000
+    // NEW deadline = 1_000_000 + min(540_000, 60_000 + 30_000) = 1_090_000
+    const oldDeadline = 1_005_000;
     const env: HoldEnvelope = {
       decision: "HOLD",
       checkpoint_id: "cp1",
@@ -111,15 +123,18 @@ describe("waitForCheckpoint", () => {
     };
 
     let t = 1_000_000; // local clock — 5s "ahead" of expires_at
-    const states: Array<Partial<CheckpointState>> = [
-      { status: "pending" },
-      { status: "approved", effective_decision: "ALLOW", resolved_by: "reviewer@x" },
-    ];
-    let i = 0;
     const client = {
-      getCheckpoint: async () => {
-        const s = states[Math.min(i++, states.length - 1)];
-        return { id: "cp1", status: "pending", title: "t", on_timeout: "DENY", expires_at: env.expires_at, ...s } as CheckpointState;
+      // State is driven by the fake clock value, not a fixed queue.
+      // Returns pending while t <= oldDeadline so that:
+      //   - old code: sees pending at t=1_000_000, sleeps to t=1_005_000, sees
+      //     pending again (t ≤ 1_005_000), hits its deadline → DENY.
+      //   - new code: sees pending at t=1_000_000 and t=1_005_000, sleeps to
+      //     t=1_010_000, sees approved (t > oldDeadline) → ALLOW.
+      getCheckpoint: async (): Promise<CheckpointState> => {
+        if (t > oldDeadline) {
+          return { id: "cp1", status: "approved", effective_decision: "ALLOW", resolved_by: "reviewer@x", title: "t", on_timeout: "DENY", expires_at: env.expires_at };
+        }
+        return { id: "cp1", status: "pending", title: "t", on_timeout: "DENY", expires_at: env.expires_at };
       },
       heartbeat: async () => {},
       cancel: async () => {},
@@ -131,9 +146,8 @@ describe("waitForCheckpoint", () => {
       pollMs: 5_000,
     });
 
-    // Old code would have timed out (DENY) because expires_at is only 5s after
-    // local clock start. New code sees 60s TTL + 30s slack = 90s → waits for the
-    // second poll which returns approved ALLOW.
+    // Old code times out at t=1_005_000 while still pending → DENY.
+    // New code polls past the old deadline to t=1_010_000 → approved ALLOW.
     expect(got.decision).toBe("ALLOW");
     expect(got.resolvedBy).toBe("reviewer@x");
   });
