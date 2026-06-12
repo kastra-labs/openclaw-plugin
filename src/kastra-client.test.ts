@@ -75,3 +75,25 @@ describe("KastraClient.getCheckpoint", () => {
     await expect(c.getCheckpoint("cp1")).rejects.toThrow("checkpoint fetch failed (502)");
   });
 });
+
+describe("KastraClient.cancel", () => {
+  it("POSTs to /v1/checkpoints/{id}/cancel with auth header", async () => {
+    const f = fakeFetch(200, {});
+    const c = new KastraClient("https://x", "tok", f);
+    await c.cancel("cp99");
+    expect((fakeFetch as any).lastUrl).toBe("https://x/v1/checkpoints/cp99/cancel");
+    expect((fakeFetch as any).lastInit.method).toBe("POST");
+    expect((fakeFetch as any).lastInit.headers.authorization).toBe("Bearer tok");
+  });
+
+  it("swallows network errors (best-effort)", async () => {
+    const f = (async () => { throw new Error("network down"); }) as typeof fetch;
+    const c = new KastraClient("https://x", "t", f);
+    await expect(c.cancel("cp1")).resolves.toBeUndefined();
+  });
+
+  it("swallows non-2xx responses (best-effort)", async () => {
+    const c = new KastraClient("https://x", "t", fakeFetch(500, { error: "internal" }));
+    await expect(c.cancel("cp1")).resolves.toBeUndefined();
+  });
+});

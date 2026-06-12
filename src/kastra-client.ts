@@ -78,4 +78,19 @@ export class KastraClient {
       /* ignore */
     }
   }
+
+  // Best-effort: POST /v1/checkpoints/{id}/cancel so the backend sweeper
+  // doesn't wait for the heartbeat to go stale after the hook gives up.
+  // Mirrors Go client.Cancel (checkpoint.go:92–110). All errors are swallowed.
+  async cancel(id: string): Promise<void> {
+    try {
+      await this.fetchImpl(`${this.baseUrl}/v1/checkpoints/${id}/cancel`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.deviceToken}` },
+        signal: AbortSignal.timeout(3000),
+      });
+    } catch {
+      /* ignore */
+    }
+  }
 }
