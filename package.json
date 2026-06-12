@@ -6,6 +6,13 @@
   "license": "MIT",
   "engines": { "node": ">=22" },
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": ["dist/", "openclaw.plugin.json", "README.md"],
   "openclaw": {
     "extensions": ["./dist/index.js"]
@@ -13,7 +20,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "check": "tsc -p tsconfig.json --noEmit && vitest run"
+    "check": "tsc -p tsconfig.json --noEmit && vitest run --passWithNoTests"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

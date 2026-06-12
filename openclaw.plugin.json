@@ -21,6 +21,8 @@
     "apiBaseUrl": { "label": "Kastra API base URL", "placeholder": "https://api.kastra.ai" },
     "deviceToken": { "label": "Device token", "sensitive": true, "help": "Optional on machines with kastra-edge — defaults to device_handle from ~/.kastra/config.toml" },
     "environment": { "label": "Policy environment", "placeholder": "dev" },
+    "jurisdiction": { "label": "Policy jurisdiction", "placeholder": "us" },
+    "holdMaxWaitMs": { "label": "Max hold wait (ms)", "help": "How long a hold may wait for approval before applying the rule's on-timeout decision. Clamped to 540000." },
     "failMode": { "label": "When Kastra is unreachable", "help": "open = allow (default), closed = block" },
     "governMessages": { "label": "Also govern outbound chat messages", "help": "Adds a policy check to every channel reply (latency cost). Default off." }
   }
