@@ -1,0 +1,27 @@
+{
+  "id": "kastra",
+  "name": "Kastra Governance",
+  "description": "Evaluates every tool call against your Kastra tenant policies — allow, block, or hold for human approval on the Kastra Edge desktop app.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": { "type": "string" },
+      "deviceToken": { "type": "string" },
+      "environment": { "type": "string" },
+      "jurisdiction": { "type": "string" },
+      "consoleBaseUrl": { "type": "string" },
+      "failMode": { "type": "string", "enum": ["open", "closed"] },
+      "governMessages": { "type": "boolean" },
+      "holdMaxWaitMs": { "type": "number" }
+    }
+  },
+  "uiHints": {
+    "apiBaseUrl": { "label": "Kastra API base URL", "placeholder": "https://api.kastra.ai" },
+    "deviceToken": { "label": "Device token", "sensitive": true, "help": "Optional on machines with kastra-edge — defaults to device_handle from ~/.kastra/config.toml" },
+    "environment": { "label": "Policy environment", "placeholder": "dev" },
+    "failMode": { "label": "When Kastra is unreachable", "help": "open = allow (default), closed = block" },
+    "governMessages": { "label": "Also govern outbound chat messages", "help": "Adds a policy check to every channel reply (latency cost). Default off." }
+  }
+}
