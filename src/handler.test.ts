@@ -116,64 +116,79 @@ describe("before_tool_call handler", () => {
     expect(logSpy).toHaveBeenCalledTimes(1);
   });
 
-  // --- Fix 3: orphaned-hold protection — waitForCheckpoint throws ---
-  it("hold wait throw: dropHold still fires and on_timeout=DENY blocks", async () => {
+  // --- Fix 3: orphaned-hold protection — waitForCheckpoint genuinely REJECTS ---
+  //
+  // These tests MUST reach the `await sleep(pollMs)` at hold.ts:91 (OUTSIDE any
+  // try) and let the rejection propagate into handler.ts's catch. A naive setup
+  // (maxWaitMs:1 + expired envelope) races the deadline return against the sleep
+  // throw and can silently take the on_timeout DEADLINE path instead — a false
+  // pin. To force the catch deterministically we give a LARGE server-intended
+  // TTL (server_now + far-future expires_at) so the deadline is far away on the
+  // first iteration; getCheckpoint stays pending; sleep always rejects → the
+  // first iteration is guaranteed to reach sleep and throw. We additionally
+  // assert the `hold wait failed:` log to PROVE the catch (not the deadline)
+  // produced the result.
+  it("hold wait REJECTS: dropHold still fires and catch applies on_timeout=DENY (blocks)", async () => {
+    const now = Date.now();
     const env = {
       decision: "HOLD",
       checkpoint_id: "cp1",
-      // Expired immediately so the loop hits the deadline path quickly.
-      expires_at: new Date(Date.now() - 1_000).toISOString(),
+      server_now: new Date(now).toISOString(),
+      // Far-future expiry → large TTL → deadline is far away → deadline path
+      // cannot win the race; the loop must reach `await sleep`.
+      expires_at: new Date(now + 600_000).toISOString(),
       on_timeout: "DENY" as const,
       title: "Hold test",
     };
     const calls: any[] = [];
+    const logSpy = vi.fn();
 
-    // getCheckpoint always returns pending so the loop never resolves early.
-    // sleep throws on first call, which propagates out of waitForCheckpoint.
-    let sleepCalls = 0;
     const handler = createBeforeToolCallHandler({
       edgeConfigPath: tomlPath,
-      log: () => {},
+      log: logSpy,
       notifyHold: async (n) => void calls.push(["notify", n]),
       clearHold: async (id) => void calls.push(["clear", id]),
       makeClient: () =>
         ({
           evaluate: async () => ({ kind: "hold", envelope: env }),
+          // Always pending → the loop never resolves early; it must hit sleep.
           getCheckpoint: async () => ({ id: "cp1", status: "pending", effective_decision: "DENY", title: "t", on_timeout: "DENY", expires_at: env.expires_at }),
           heartbeat: async () => {},
           cancel: async () => {},
         }) as any,
       holdWaitOpts: {
-        // Very short poll/deadline so we exercise the throw path quickly.
-        maxWaitMs: 1,
-        pollMs: 1,
+        // sleep at hold.ts:91 rejects → propagates out of waitForCheckpoint.
         sleep: async () => {
-          sleepCalls++;
           throw new Error("boom");
         },
       },
     });
 
     const got = await handler(EVENT, {});
-    // on_timeout=DENY → should block
+    // Catch applied on_timeout=DENY → should block.
     expect(got).toMatchObject({ block: true });
-    // dropHold must have been called (["clear", "cp1"] in calls)
+    // PROOF the catch (not the deadline path) ran: the catch logs this string.
+    expect(logSpy.mock.calls.some((c) => String(c[0]).includes("hold wait failed:"))).toBe(true);
+    // finally{} guarantees dropHold fired.
     expect(calls.some(([op, id]: any) => op === "clear" && id === "cp1")).toBe(true);
   });
 
-  it("hold wait throw: on_timeout=ALLOW allows through AND dropHold fires", async () => {
+  it("hold wait REJECTS: catch applies on_timeout=ALLOW (allows through) AND dropHold fires", async () => {
+    const now = Date.now();
     const env = {
       decision: "HOLD",
       checkpoint_id: "cp2",
-      expires_at: new Date(Date.now() - 1_000).toISOString(),
+      server_now: new Date(now).toISOString(),
+      expires_at: new Date(now + 600_000).toISOString(),
       on_timeout: "ALLOW" as const,
       title: "Hold allow test",
     };
     const calls: any[] = [];
+    const logSpy = vi.fn();
 
     const handler = createBeforeToolCallHandler({
       edgeConfigPath: tomlPath,
-      log: () => {},
+      log: logSpy,
       notifyHold: async (n) => void calls.push(["notify", n]),
       clearHold: async (id) => void calls.push(["clear", id]),
       makeClient: () =>
@@ -184,15 +199,18 @@ describe("before_tool_call handler", () => {
           cancel: async () => {},
         }) as any,
       holdWaitOpts: {
-        maxWaitMs: 1,
-        pollMs: 1,
-        sleep: async () => { throw new Error("boom"); },
+        sleep: async () => {
+          throw new Error("boom");
+        },
       },
     });
 
     const got = await handler(EVENT, {});
-    // on_timeout=ALLOW → should allow
+    // on_timeout=ALLOW distinguishes the catch's on_timeout branch from BOTH a
+    // failMode-closed default AND any deny-bias fallback → an ALLOW result here
+    // can only have come from the catch reading env.on_timeout.
     expect(got).toBeUndefined();
+    expect(logSpy.mock.calls.some((c) => String(c[0]).includes("hold wait failed:"))).toBe(true);
     expect(calls.some(([op, id]: any) => op === "clear" && id === "cp2")).toBe(true);
   });
 });
