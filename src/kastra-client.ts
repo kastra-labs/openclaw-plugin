@@ -16,11 +16,14 @@ export class KastraAuthError extends Error {
 // Mirrors kastra-edge/internal/client/evaluate.go: Bearer device handle,
 // Accept-Kastra-Hold opt-in, 3s evaluate timeout.
 export class KastraClient {
+  private readonly baseUrl: string;
   constructor(
-    private readonly baseUrl: string,
+    baseUrl: string,
     private readonly deviceToken: string,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  ) {
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+  }
 
   async evaluate(req: EvaluateRequest, timeoutMs = 3000): Promise<Decision> {
     const res = await this.fetchImpl(this.baseUrl + "/v1/evaluate", {
@@ -40,6 +43,7 @@ export class KastraClient {
       return { kind: "hold", envelope: body.data };
     }
     // 200 carries ALLOW/DENY; 403 carries a full DENY envelope too.
+    if (!res.ok && res.status !== 403) throw new Error(`/v1/evaluate upstream error (${res.status})`);
     const body = (await res.json()) as ApiEnvelope<ExecuteResponse>;
     const data = body.data;
     if (!data?.decision) {
@@ -56,8 +60,9 @@ export class KastraClient {
       headers: { authorization: `Bearer ${this.deviceToken}` },
       signal: AbortSignal.timeout(3000),
     });
+    if (!res.ok) throw new Error(`checkpoint fetch failed (${res.status})`);
     const body = (await res.json()) as ApiEnvelope<CheckpointState>;
-    if (!res.ok || !body.data) throw new Error(`checkpoint fetch failed (${res.status})`);
+    if (!body.data) throw new Error(`checkpoint fetch failed (${res.status}): missing data`);
     return body.data;
   }
 

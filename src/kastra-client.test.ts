@@ -46,6 +46,19 @@ describe("KastraClient.evaluate", () => {
     const c = new KastraClient("https://x", "t", fakeFetch(401, { success: false, error: "unauthorized" }));
     await expect(c.evaluate(REQ)).rejects.toBeInstanceOf(KastraAuthError);
   });
+
+  it("normalizes trailing slash in baseUrl", async () => {
+    const f = fakeFetch(200, { success: true, data: { decision_id: "d", decision: "ALLOW", reason: "ok" } });
+    const c = new KastraClient("https://demo.kastra.ai/", "t", f);
+    await c.evaluate(REQ);
+    expect((fakeFetch as any).lastUrl).toBe("https://demo.kastra.ai/v1/evaluate");
+  });
+
+  it("evaluate reports upstream status for non-JSON 5xx", async () => {
+    const f = (async () => new Response("<html>Bad Gateway</html>", { status: 502 })) as typeof fetch;
+    const c = new KastraClient("https://x", "t", f);
+    await expect(c.evaluate(REQ)).rejects.toThrow("/v1/evaluate upstream error (502)");
+  });
 });
 
 describe("KastraClient.getCheckpoint", () => {
@@ -54,5 +67,11 @@ describe("KastraClient.getCheckpoint", () => {
     const c = new KastraClient("https://x", "t", fakeFetch(200, { success: true, data: state }));
     expect(await c.getCheckpoint("cp1")).toEqual(state);
     expect((fakeFetch as any).lastUrl).toBe("https://x/v1/checkpoints/cp1");
+  });
+
+  it("getCheckpoint reports status for non-JSON 5xx", async () => {
+    const f = (async () => new Response("<html>Bad Gateway</html>", { status: 502 })) as typeof fetch;
+    const c = new KastraClient("https://x", "t", f);
+    await expect(c.getCheckpoint("cp1")).rejects.toThrow("checkpoint fetch failed (502)");
   });
 });
