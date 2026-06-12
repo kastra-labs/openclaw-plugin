@@ -14,6 +14,7 @@ export type HookCtx = {
   agentId?: string;
   sessionKey?: string;
   messageProvider?: string;
+  /** Reserved — not yet mapped to an attribute; messageProvider carries the channel surface. */
   channelId?: string;
 };
 
@@ -31,7 +32,13 @@ export function buildEvaluateRequest(event: HookEvent, ctx: HookCtx | undefined,
   if (ctx?.agentId) attrs["x-kastra-attr-openclaw-agent"] = String(ctx.agentId);
   if (ctx?.messageProvider) attrs["x-kastra-attr-openclaw-channel"] = String(ctx.messageProvider);
   if (event.params && Object.keys(event.params).length > 0) {
-    attrs["x-kastra-attr-tool-input"] = truncateUTF8(JSON.stringify(event.params), TOOL_INPUT_LIMIT);
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(event.params);
+    } catch {
+      serialized = "<unserializable>"; // not JSON on purpose: parse must fail loudly, and audit shows the gap
+    }
+    attrs["x-kastra-attr-tool-input"] = truncateUTF8(serialized, TOOL_INPUT_LIMIT);
   }
   return {
     environment: cfg.environment || undefined,

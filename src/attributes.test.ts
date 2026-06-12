@@ -50,6 +50,13 @@ describe("buildEvaluateRequest", () => {
     expect(req.actor?.email).toBeUndefined();
     expect(req.attributes!["x-kastra-attr-tool-input"]).toBeUndefined();
   });
+
+  it("falls back to a sentinel for unserializable params", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const req = buildEvaluateRequest({ toolName: "exec", params: circular }, undefined, CFG);
+    expect(req.attributes!["x-kastra-attr-tool-input"]).toBe("<unserializable>");
+  });
 });
 
 describe("truncateUTF8", () => {
