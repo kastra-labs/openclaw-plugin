@@ -15,6 +15,7 @@ export type ResolvedConfig = {
 };
 
 export const DEFAULT_API_BASE_URL = "https://api.kastra.ai";
+export const DEFAULT_JURISDICTION = "us-east"; // mirrors kastra-edge internal/config defaults
 // Must stay under OpenClaw's 600 000 ms hook-budget cap, or the hook runner
 // aborts the handler and the tool call proceeds ungoverned (fail-open).
 export const DEFAULT_HOLD_MAX_WAIT_MS = 540_000;
@@ -78,7 +79,7 @@ export function resolveConfig(
     apiBaseUrl: str(pc.apiBaseUrl) ?? edge.api_base_url ?? DEFAULT_API_BASE_URL,
     deviceToken,
     environment: str(pc.environment) ?? edge.default_environment ?? "",
-    jurisdiction: str(pc.jurisdiction) ?? edge.default_jurisdiction ?? "",
+    jurisdiction: str(pc.jurisdiction) ?? edge.default_jurisdiction ?? DEFAULT_JURISDICTION,
     userEmail: edge.user_email ?? "",
     consoleBaseUrl: str(pc.consoleBaseUrl) ?? edge.admin_console_url ?? "",
     failMode: pc.failMode === "closed" ? "closed" : "open",

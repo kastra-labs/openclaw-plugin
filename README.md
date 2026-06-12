@@ -52,6 +52,7 @@ decision after the default budget). In `~/.openclaw/openclaw.json`:
 | `apiBaseUrl` | `https://api.kastra.ai` (or TOML `api_base_url`) | Kastra backend |
 | `deviceToken` | TOML `device_handle` | Bearer credential |
 | `environment` | TOML `default_environment` | policy environment |
+| `jurisdiction` | `us-east` (or TOML `default_jurisdiction`) | policy jurisdiction |
 | `failMode` | `open` | `closed` blocks all tools when Kastra is unreachable |
 | `governMessages` | `false` | also evaluate outbound chat replies (latency cost) |
 | `holdMaxWaitMs` | `540000` | max in-hook wait for approval (clamped ≤ 540 s) |
