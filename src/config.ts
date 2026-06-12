@@ -33,6 +33,13 @@ const EDGE_KEYS = [
   "admin_console_url",
 ] as const;
 
+// Precompile one regex per key at module load.  The value pattern
+// `((?:[^"\\]|\\.)*)` matches quoted TOML string values including escape
+// sequences (e.g. `\"` inside a value).
+const EDGE_KEY_REGEXES = new Map(
+  EDGE_KEYS.map((k) => [k, new RegExp(`^${k}\\s*=\\s*"((?:[^"\\\\]|\\\\.)*)"`, "m")]),
+);
+
 // config.toml is flat `key = "value"` pairs; extract the handful of keys we
 // need without a TOML dependency.
 export function readEdgeConfig(path: string): Record<string, string> {
@@ -44,14 +51,18 @@ export function readEdgeConfig(path: string): Record<string, string> {
   }
   const out: Record<string, string> = {};
   for (const key of EDGE_KEYS) {
-    const m = text.match(new RegExp(`^${key}\\s*=\\s*"([^"]*)"`, "m"));
-    if (m) out[key] = m[1];
+    const m = text.match(EDGE_KEY_REGEXES.get(key)!);
+    // Unescape backslash sequences captured from the TOML quoted string.
+    if (m) out[key] = m[1].replace(/\\(.)/g, "$1");
   }
   return out;
 }
 
+// Config is static for the lifetime of the process; memoization is
+// deliberately deferred until there is a measured need for it.
 export function resolveConfig(
   pluginConfig: Record<string, unknown> | undefined,
+  /** @internal Test seam — omit in production; defaults to the standard edge config path. */
   edgeConfigPath: string = kastraEdgeConfigPath(),
 ): ResolvedConfig | { error: string } {
   const pc = pluginConfig ?? {};
