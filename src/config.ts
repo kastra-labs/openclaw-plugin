@@ -38,7 +38,7 @@ const EDGE_KEYS = [
 // `((?:[^"\\]|\\.)*)` matches quoted TOML string values including escape
 // sequences (e.g. `\"` inside a value).
 const EDGE_KEY_REGEXES = new Map(
-  EDGE_KEYS.map((k) => [k, new RegExp(`^${k}\\s*=\\s*"((?:[^"\\\\]|\\\\.)*)"`, "m")]),
+  EDGE_KEYS.map((k) => [k, new RegExp(`^${k}\\s*=\\s*"((?:[^"\\\\]|\\\\.)*)"`, "m")]),  // nosemgrep: javascript.language.regexp.dynamic-pattern -- the only interpolated value is k, drawn from the compile-time EDGE_KEYS array of literal TOML key names; no runtime or user input reaches the pattern.
 );
 
 // config.toml is flat `key = "value"` pairs; extract the handful of keys we
