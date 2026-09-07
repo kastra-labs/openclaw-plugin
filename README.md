@@ -155,6 +155,8 @@ the tarball into a fresh temporary directory, and exercises:
 
 The suite isolates home/config/state, does not inherit service credentials,
 and stops the gateway and removes temporary state on completion.
+Dependency installation may access the public npm registry on a cold cache;
+the gateway and policy fixtures do not require a live service.
 It tests the packaged artifact, not an injected replacement client.
 `npm run smoke` and `node scripts/smoke.mjs` run the same no-login suite.
 CI tests OpenClaw **2026.6.6** and **2026.9.2**; an alternate installed host can

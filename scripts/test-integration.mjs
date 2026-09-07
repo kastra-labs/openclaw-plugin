@@ -21,7 +21,7 @@ try {
   assert.ok(!names.some(name => name.startsWith("node_modules/") || name.endsWith(".test.js")));
   const install = join(temporary, "installation");
   mkdirSync(install);
-  run(["npm", "install", "--prefix", install, "--offline", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", join(temporary, packed.filename)], temporary);
+  run(["npm", "install", "--prefix", install, "--prefer-offline", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", join(temporary, packed.filename)], temporary);
   const plugin = join(install, "node_modules/@kastra_labs/openclaw");
   assert.equal(JSON.parse(readFileSync(join(plugin, "package.json"))).version, packed.version);
   const env = {
