@@ -115,7 +115,7 @@ describe("resolveConfig", () => {
 
   it("falls back to TOML device handle and environment", () => {
     const path = writeToml(
-      `device_handle = "dh_toml"\napi_base_url = "https://demo.kastra.ai"\ndefault_environment = "dev"\nadmin_console_url = "https://app.kastra.ai"\n`,
+      `device_handle = "dh_toml"\napi_base_url = "https://demo.kastra.ai"\ndefault_environment = "dev"\nconsole_base_url = "https://app.kastra.ai"\n`,
     );
     const got = resolveConfig(undefined, path);
     if ("error" in got) throw new Error(got.error);
@@ -127,11 +127,11 @@ describe("resolveConfig", () => {
 });
 
 const minimalToken = 'device_handle="dh_test"\n';
-it("shares both config overrides and rejects conflicting files", () => {
+it("reads KASTRA_CONFIG and rejects the retired KASTRA_EDGE_CONFIG whenever it is set", () => {
  expect(kastraEdgeConfigPath({KASTRA_CONFIG:"/new.toml"})).toBe("/new.toml");
- expect(kastraEdgeConfigPath({KASTRA_EDGE_CONFIG:"/old.toml"})).toBe("/old.toml");
- expect(kastraEdgeConfigPath({KASTRA_CONFIG:"/same.toml",KASTRA_EDGE_CONFIG:"/same.toml"})).toBe("/same.toml");
- expect(()=>kastraEdgeConfigPath({KASTRA_CONFIG:"/new.toml",KASTRA_EDGE_CONFIG:"/old.toml"})).toThrow("different files");
+ // Retired: an error even when it names the same file, so a stale dotfile can never select a file silently.
+ expect(()=>kastraEdgeConfigPath({KASTRA_EDGE_CONFIG:"/old.toml"})).toThrow("no longer read");
+ expect(()=>kastraEdgeConfigPath({KASTRA_CONFIG:"/same.toml",KASTRA_EDGE_CONFIG:"/same.toml"})).toThrow("no longer read");
  expect(kastraEdgeConfigPath({XDG_CONFIG_HOME:"/config"})).toBe("/config/kastra/config.toml");
  expect(kastraEdgeConfigPath({})).toMatch(/\.kastra[/\\]config.toml$/);
 });
@@ -143,8 +143,8 @@ api_base_url = "https://foreign.test"
 `);
  expect(readEdgeConfig(path)).toEqual({device_handle:"dh_literal",user_email:"user@example.test"});
 });
-it("uses canonical console config, then legacy, with explicit plugin precedence",()=>{
- for(const [content,want] of [["", ""],['admin_console_url="https://old.test/"',"https://old.test"],['console_base_url="https://new.test/"',"https://new.test"],['console_base_url="https://new.test/"\nadmin_console_url="https://old.test"',"https://new.test"]]){
+it("reads console_base_url only (admin_console_url is the admin console), with explicit plugin precedence",()=>{
+ for(const [content,want] of [["", ""],['admin_console_url="https://old.test/"',""],['console_base_url="https://new.test/"',"https://new.test"],['console_base_url="https://new.test/"\nadmin_console_url="https://old.test"',"https://new.test"]]){
   const path=writeToml(minimalToken+content);
   expect(resolveConfig({},path)).toMatchObject({consoleBaseUrl:want});
   expect(resolveConfig({consoleBaseUrl:"https://explicit.test/console/"},path)).toMatchObject({consoleBaseUrl:"https://explicit.test/console"});

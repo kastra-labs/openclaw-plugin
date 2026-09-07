@@ -2,7 +2,7 @@ import { parse } from "smol-toml";
 import { normalizeBaseUrl } from "./urls.js";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 export type ResolvedConfig = {
   apiBaseUrl: string;
@@ -24,11 +24,13 @@ export const DEFAULT_JURISDICTION = "us-east"; // default policy jurisdiction fo
 export const DEFAULT_HOLD_MAX_WAIT_MS = 540_000;
 
 export function kastraEdgeConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.KASTRA_CONFIG && env.KASTRA_EDGE_CONFIG && resolve(env.KASTRA_CONFIG) !== resolve(env.KASTRA_EDGE_CONFIG)) {
-    throw new Error("KASTRA_CONFIG and KASTRA_EDGE_CONFIG refer to different files; set only KASTRA_CONFIG");
+  // KASTRA_EDGE_CONFIG is retired. Ignoring it would send a machine that still
+  // sets it to the default path, where "not logged in" fails open; so its
+  // presence is an error, even when it names the same file as KASTRA_CONFIG.
+  if (env.KASTRA_EDGE_CONFIG) {
+    throw new Error("KASTRA_EDGE_CONFIG is no longer read; set KASTRA_CONFIG instead");
   }
   if (env.KASTRA_CONFIG) return env.KASTRA_CONFIG;
-  if (env.KASTRA_EDGE_CONFIG) return env.KASTRA_EDGE_CONFIG;
   if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "kastra", "config.toml");
   return join(homedir(), ".kastra", "config.toml");
 }
@@ -39,7 +41,6 @@ const EDGE_KEYS = [
   "default_environment",
   "default_jurisdiction",
   "user_email",
-  "admin_console_url",
   "console_base_url",
 ] as const;
 
@@ -76,7 +77,9 @@ export function resolveConfig(
   try {
     edge = readEdgeConfig(edgeConfigPath ?? kastraEdgeConfigPath());
     apiBaseUrl = normalizeBaseUrl(str(pc.apiBaseUrl) ?? edge.api_base_url ?? DEFAULT_API_BASE_URL);
-    const console = str(pc.consoleBaseUrl) ?? str(edge.console_base_url) ?? edge.admin_console_url ?? "";
+    // console_base_url is the customer console; admin_console_url names the
+    // ADMIN console and is never read as the approval-link base.
+    const console = str(pc.consoleBaseUrl) ?? str(edge.console_base_url) ?? "";
     if (console) {
       try { consoleBaseUrl = normalizeBaseUrl(console); }
       catch { consoleWarning = "Invalid Kastra console URL; approval links disabled. Policy evaluation remains active."; }

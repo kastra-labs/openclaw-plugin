@@ -78,18 +78,19 @@ guides.
 
 ## Configuration and public interfaces
 
-The plugin reads the same file as every Edge binary: `KASTRA_CONFIG`, legacy
-`KASTRA_EDGE_CONFIG`, `$XDG_CONFIG_HOME/kastra/config.toml`, then
-`~/.kastra/config.toml`. Conflicting nonempty overrides are a configuration
-error; a custom file never falls back to another workspace's credentials.
+The plugin reads the same file as every Edge binary: `KASTRA_CONFIG`,
+`$XDG_CONFIG_HOME/kastra/config.toml`, then `~/.kastra/config.toml`. The
+pre-release `KASTRA_EDGE_CONFIG` is retired and is a configuration error
+whenever it is set; a custom file never falls back to another workspace's
+credentials.
 TOML sections, literal strings, escapes and comments are parsed using
 [smol-toml](https://github.com/squirrelchat/smol-toml). Only top-level keys apply.
 Malformed files and non-string supported keys produce a logged configuration
 error. The existing unconfigured/failMode behavior is preserved.
 
 Explicit plugin options win over the file. `consoleBaseUrl` falls back to
-`console_base_url`, then legacy `admin_console_url`; neither is inferred from
-a custom API host. Links use `/approvals?checkpoint=<escaped-id>`.
+`console_base_url` only (`admin_console_url` is the admin console and is never
+used for approval links); neither is inferred from a custom API host. Links use `/approvals?checkpoint=<escaped-id>`.
 `apiBaseUrl` / `api_base_url` is a deployment root or reverse-proxy prefix,
 without `/api` or `/v1`. Trailing slashes normalize; credentials, queries,
 fragments and non-HTTP(S) schemes are rejected before any fetch. An existing

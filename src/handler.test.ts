@@ -286,7 +286,7 @@ it.each(["open","closed"])("configuration validation preserves failMode=%s witho
  if(failMode==="closed")expect(result).toMatchObject({block:true});else expect(result).toBeUndefined();
 });
 
-it.each(["admin_console_url", "console_base_url"])("still enforces policy with invalid optional %s", async (key) => {
+it.each(["console_base_url"])("still enforces policy with invalid optional %s", async (key) => {
   const path = join(mkdtempSync(join(tmpdir(), "kastra-console-")), "config.toml");
   writeFileSync(path, `device_handle="dh_x"\n${key}="invalid-display-url"\n`);
   const log = vi.fn();

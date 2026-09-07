@@ -45,8 +45,8 @@ describe("daemon notify", () => {
 
 it("uses the selected config directory for daemon IPC",()=>{
  expect(daemonSocketPath({KASTRA_CONFIG:"/private/kastra/config.toml"})).toBe("/private/kastra/daemon.sock");
- expect(daemonSocketPath({KASTRA_EDGE_CONFIG:"/legacy/config.toml"})).toBe("/legacy/daemon.sock");
+ expect(()=>daemonSocketPath({KASTRA_EDGE_CONFIG:"/legacy/config.toml"})).toThrow("no longer read");
  expect(daemonSocketPath({XDG_CONFIG_HOME:"/config"})).toBe("/config/kastra/daemon.sock");
  expect(daemonSocketPath({KASTRA_EDGE_DAEMON_SOCKET:"/explicit.sock",KASTRA_CONFIG:"one",KASTRA_EDGE_CONFIG:"two"})).toBe("/explicit.sock");
- expect(()=>daemonSocketPath({KASTRA_CONFIG:"one",KASTRA_EDGE_CONFIG:"two"})).toThrow("different files");
+ expect(()=>daemonSocketPath({KASTRA_CONFIG:"one",KASTRA_EDGE_CONFIG:"two"})).toThrow("no longer read");
 });
