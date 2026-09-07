@@ -144,7 +144,9 @@ api_base_url = "https://foreign.test"
  expect(readEdgeConfig(path)).toEqual({device_handle:"dh_literal",user_email:"user@example.test"});
 });
 it("reads console_base_url only (admin_console_url is the admin console), with explicit plugin precedence",()=>{
- for(const [content,want] of [["", ""],['admin_console_url="https://old.test/"',""],['console_base_url="https://new.test/"',"https://new.test"],['console_base_url="https://new.test/"\nadmin_console_url="https://old.test"',"https://new.test"]]){
+ // Same rule as kastra-edge: explicit console_base_url wins; a known SaaS API host derives its console; a private host without it has none.
+ const privateApi='api_base_url="https://private.test/api"\n';
+ for(const [content,want] of [["", "https://app.kastra.ai"],['api_base_url="https://api.demo.kastra.ai"',"https://demo.kastra.ai"],[privateApi,""],[privateApi+'admin_console_url="https://old.test/"',""],[privateApi+'console_base_url="https://new.test/"',"https://new.test"],['console_base_url="https://new.test/"\nadmin_console_url="https://old.test"',"https://new.test"]]){
   const path=writeToml(minimalToken+content);
   expect(resolveConfig({},path)).toMatchObject({consoleBaseUrl:want});
   expect(resolveConfig({consoleBaseUrl:"https://explicit.test/console/"},path)).toMatchObject({consoleBaseUrl:"https://explicit.test/console"});

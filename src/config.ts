@@ -1,5 +1,5 @@
 import { parse } from "smol-toml";
-import { normalizeBaseUrl } from "./urls.js";
+import { derivedSaaSConsole, normalizeBaseUrl } from "./urls.js";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,9 +24,12 @@ export const DEFAULT_JURISDICTION = "us-east"; // default policy jurisdiction fo
 export const DEFAULT_HOLD_MAX_WAIT_MS = 540_000;
 
 export function kastraEdgeConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  // KASTRA_EDGE_CONFIG is retired. Ignoring it would send a machine that still
-  // sets it to the default path, where "not logged in" fails open; so its
-  // presence is an error, even when it names the same file as KASTRA_CONFIG.
+  // KASTRA_EDGE_CONFIG is retired. Ignoring it would silently send a machine
+  // that still sets it to the default path (another login, or none), so its
+  // presence is a configuration error even when it names the same file as
+  // KASTRA_CONFIG. The handler surfaces that error once; under failMode
+  // "closed" it blocks, under the default "open" the plugin does not govern
+  // (the documented unconfigured contract) — the error is what makes it visible.
   if (env.KASTRA_EDGE_CONFIG) {
     throw new Error("KASTRA_EDGE_CONFIG is no longer read; set KASTRA_CONFIG instead");
   }
@@ -79,7 +82,7 @@ export function resolveConfig(
     apiBaseUrl = normalizeBaseUrl(str(pc.apiBaseUrl) ?? edge.api_base_url ?? DEFAULT_API_BASE_URL);
     // console_base_url is the customer console; admin_console_url names the
     // ADMIN console and is never read as the approval-link base.
-    const console = str(pc.consoleBaseUrl) ?? str(edge.console_base_url) ?? "";
+    const console = str(pc.consoleBaseUrl) ?? str(edge.console_base_url) ?? derivedSaaSConsole(apiBaseUrl);
     if (console) {
       try { consoleBaseUrl = normalizeBaseUrl(console); }
       catch { consoleWarning = "Invalid Kastra console URL; approval links disabled. Policy evaluation remains active."; }

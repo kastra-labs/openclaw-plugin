@@ -89,8 +89,10 @@ Malformed files and non-string supported keys produce a logged configuration
 error. The existing unconfigured/failMode behavior is preserved.
 
 Explicit plugin options win over the file. `consoleBaseUrl` falls back to
-`console_base_url` only (`admin_console_url` is the admin console and is never
-used for approval links); neither is inferred from a custom API host. Links use `/approvals?checkpoint=<escaped-id>`.
+`console_base_url`; when neither is set, the two hosted API origins derive their
+console (`api.kastra.ai` → `app.kastra.ai`, `api.demo.kastra.ai` →
+`demo.kastra.ai`) exactly as kastra-edge does, and a custom API host derives
+nothing. `admin_console_url` is the admin console and is never used for links. Links use `/approvals?checkpoint=<escaped-id>`.
 `apiBaseUrl` / `api_base_url` is a deployment root or reverse-proxy prefix,
 without `/api` or `/v1`. Trailing slashes normalize; credentials, queries,
 fragments and non-HTTP(S) schemes are rejected before any fetch. An existing
