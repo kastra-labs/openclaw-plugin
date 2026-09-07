@@ -22,8 +22,13 @@ export function serializeInput(input: unknown): string {
     if (value === null || value === undefined || typeof value === "string" || typeof value === "boolean") return;
     if (typeof value === "number" && Number.isFinite(value)) return;
     if (typeof value !== "object" || seen.has(value)) throw new InvalidInputError();
-    // Exactly Date, never a subclass: an overridden toJSON is the evasion this guards.
-    if (Object.getPrototypeOf(value) === Date.prototype) return;
+    // Exactly Date, and only while it still serializes as one: a subclass or an
+    // own toJSON is the evasion this guards, and JSON.stringify would take the
+    // override, showing policy a value the tool never receives.
+    if (Object.getPrototypeOf(value) === Date.prototype) {
+      if (Object.hasOwn(value, "toJSON")) throw new InvalidInputError();
+      return;
+    }
     const array = Array.isArray(value);
     if (array && Object.getPrototypeOf(value) !== Array.prototype) throw new InvalidInputError();
     if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw new InvalidInputError();

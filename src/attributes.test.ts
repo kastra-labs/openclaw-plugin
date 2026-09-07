@@ -62,6 +62,12 @@ describe("buildEvaluateRequest", () => {
     expect(JSON.parse(req.attributes!["x-kastra-attr-tool-input"])).toEqual({ since: "1970-01-01T00:00:00.000Z" });
   });
 
+  it("still refuses a Date carrying its own toJSON", () => {
+    const spoofed = new Date(9e12);
+    spoofed.toJSON = () => "1970-01-01T00:00:00.000Z";
+    expect(() => buildEvaluateRequest({ toolName: "search", params: { since: spoofed } }, undefined, CFG)).toThrow();
+  });
+
   it("still refuses a Date subclass whose toJSON hides the real value", () => {
     class Masked extends Date { toJSON() { return "1970-01-01T00:00:00.000Z"; } }
     expect(() => buildEvaluateRequest({ toolName: "search", params: { since: new Masked(9e12) } }, undefined, CFG)).toThrow();
