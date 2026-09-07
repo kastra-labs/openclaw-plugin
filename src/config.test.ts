@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_API_BASE_URL, readEdgeConfig, resolveConfig } from "./config.js";
+import { DEFAULT_API_BASE_URL, kastraEdgeConfigPath, readEdgeConfig, resolveConfig } from "./config.js";
 
 function writeToml(content: string): string {
   const dir = mkdtempSync(join(tmpdir(), "kastra-test-"));
@@ -115,7 +115,7 @@ describe("resolveConfig", () => {
 
   it("falls back to TOML device handle and environment", () => {
     const path = writeToml(
-      `device_handle = "dh_toml"\napi_base_url = "https://demo.kastra.ai"\ndefault_environment = "dev"\nadmin_console_url = "https://app.kastra.ai"\n`,
+      `device_handle = "dh_toml"\napi_base_url = "https://demo.kastra.ai"\ndefault_environment = "dev"\nconsole_base_url = "https://app.kastra.ai"\n`,
     );
     const got = resolveConfig(undefined, path);
     if ("error" in got) throw new Error(got.error);
@@ -124,4 +124,36 @@ describe("resolveConfig", () => {
     expect(got.environment).toBe("dev");
     expect(got.consoleBaseUrl).toBe("https://app.kastra.ai");
   });
+});
+
+const minimalToken = 'device_handle="dh_test"\n';
+it("reads KASTRA_CONFIG and rejects the retired KASTRA_EDGE_CONFIG whenever it is set", () => {
+ expect(kastraEdgeConfigPath({KASTRA_CONFIG:"/new.toml"})).toBe("/new.toml");
+ // Retired: an error even when it names the same file, so a stale dotfile can never select a file silently.
+ expect(()=>kastraEdgeConfigPath({KASTRA_EDGE_CONFIG:"/old.toml"})).toThrow("no longer read");
+ expect(()=>kastraEdgeConfigPath({KASTRA_CONFIG:"/same.toml",KASTRA_EDGE_CONFIG:"/same.toml"})).toThrow("no longer read");
+ expect(kastraEdgeConfigPath({XDG_CONFIG_HOME:"/config"})).toBe("/config/kastra/config.toml");
+ expect(kastraEdgeConfigPath({})).toMatch(/\.kastra[/\\]config.toml$/);
+});
+it("parses literal strings, Unicode escapes and sections without shadowing", () => {
+ const path=writeToml(String.raw`device_handle = 'dh_literal'
+user_email = "user\u0040example.test"
+[cache]
+api_base_url = "https://foreign.test"
+`);
+ expect(readEdgeConfig(path)).toEqual({device_handle:"dh_literal",user_email:"user@example.test"});
+});
+it("reads console_base_url only (admin_console_url is the admin console), with explicit plugin precedence",()=>{
+ // Same rule as kastra-edge: explicit console_base_url wins; a known SaaS API host derives its console; a private host without it has none.
+ const privateApi='api_base_url="https://private.test/api"\n';
+ for(const [content,want] of [["", "https://app.kastra.ai"],['api_base_url="https://api.demo.kastra.ai"',"https://demo.kastra.ai"],[privateApi,""],[privateApi+'admin_console_url="https://old.test/"',""],[privateApi+'console_base_url="https://new.test/"',"https://new.test"],['console_base_url="https://new.test/"\nadmin_console_url="https://old.test"',"https://new.test"]]){
+  const path=writeToml(minimalToken+content);
+  expect(resolveConfig({},path)).toMatchObject({consoleBaseUrl:want});
+  expect(resolveConfig({consoleBaseUrl:"https://explicit.test/console/"},path)).toMatchObject({consoleBaseUrl:"https://explicit.test/console"});
+ }
+});
+it("reports malformed and wrong-type TOML rather than falling back",()=>{
+ for(const bad of ['device_handle=1', 'device_handle="broken', '[cache]\napi_base_url="https://foreign.test"']) expect(resolveConfig({},writeToml(bad))).toHaveProperty("error");
+ for(const bad of ["ftp://example.test","https://user:secret@example.test","https://example.test?token=x","https://example.test#id"]) expect(resolveConfig({apiBaseUrl:bad},writeToml(minimalToken))).toHaveProperty("error");
+ expect(resolveConfig({},writeToml(minimalToken+'api_base_url="https://private.test/prefix/"'))).toMatchObject({apiBaseUrl:"https://private.test/prefix",consoleBaseUrl:"",jurisdiction:"us-east"});
 });

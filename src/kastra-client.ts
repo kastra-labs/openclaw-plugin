@@ -1,3 +1,4 @@
+import { normalizeBaseUrl } from "./urls.js";
 import type {
   ApiEnvelope,
   CheckpointState,
@@ -13,7 +14,7 @@ export class KastraAuthError extends Error {
   }
 }
 
-// Mirrors kastra-edge/internal/client/evaluate.go: Bearer device handle,
+// Evaluate requests use a Bearer device handle,
 // Accept-Kastra-Hold opt-in, 3s evaluate timeout.
 export class KastraClient {
   private readonly baseUrl: string;
@@ -22,7 +23,7 @@ export class KastraClient {
     private readonly deviceToken: string,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.baseUrl = normalizeBaseUrl(baseUrl);
   }
 
   async evaluate(req: EvaluateRequest, timeoutMs = 3000): Promise<Decision> {
@@ -56,7 +57,7 @@ export class KastraClient {
   }
 
   async getCheckpoint(id: string): Promise<CheckpointState> {
-    const res = await this.fetchImpl(`${this.baseUrl}/v1/checkpoints/${id}`, {
+    const res = await this.fetchImpl(`${this.baseUrl}/v1/checkpoints/${encodeURIComponent(id)}`, {
       headers: { authorization: `Bearer ${this.deviceToken}` },
       signal: AbortSignal.timeout(3000),
     });
@@ -69,7 +70,7 @@ export class KastraClient {
   // Best-effort: heartbeat failures must never break the wait loop.
   async heartbeat(id: string): Promise<void> {
     try {
-      await this.fetchImpl(`${this.baseUrl}/v1/checkpoints/${id}/heartbeat`, {
+      await this.fetchImpl(`${this.baseUrl}/v1/checkpoints/${encodeURIComponent(id)}/heartbeat`, {
         method: "POST",
         headers: { authorization: `Bearer ${this.deviceToken}` },
         signal: AbortSignal.timeout(3000),
@@ -81,10 +82,10 @@ export class KastraClient {
 
   // Best-effort: POST /v1/checkpoints/{id}/cancel so the backend sweeper
   // doesn't wait for the heartbeat to go stale after the hook gives up.
-  // Mirrors Go client.Cancel (checkpoint.go:92–110). All errors are swallowed.
+  // Cancellation errors are ignored so cleanup does not interrupt the hook.
   async cancel(id: string): Promise<void> {
     try {
-      await this.fetchImpl(`${this.baseUrl}/v1/checkpoints/${id}/cancel`, {
+      await this.fetchImpl(`${this.baseUrl}/v1/checkpoints/${encodeURIComponent(id)}/cancel`, {
         method: "POST",
         headers: { authorization: `Bearer ${this.deviceToken}` },
         signal: AbortSignal.timeout(3000),

@@ -1,3 +1,4 @@
+import { normalizeBaseUrl } from "./urls.js";
 import { describe, expect, it } from "vitest";
 import { KastraAuthError, KastraClient } from "./kastra-client.js";
 import type { EvaluateRequest } from "./types.js";
@@ -96,4 +97,21 @@ describe("KastraClient.cancel", () => {
     const c = new KastraClient("https://x", "t", fakeFetch(500, { error: "internal" }));
     await expect(c.cancel("cp1")).resolves.toBeUndefined();
   });
+});
+
+it("preserves a deployment prefix across every checkpoint operation", async()=>{
+ const paths:string[]=[];
+ const f=(async(input:RequestInfo|URL)=>{paths.push(String(input));return new Response(JSON.stringify({success:true,data:{decision:"ALLOW",id:"cp1",status:"pending"}}));}) as typeof fetch;
+ const c=new KastraClient("https://private.test/prefix///","dh_test",f);
+ await c.evaluate(REQ);await c.getCheckpoint("cp1");await c.heartbeat("cp1");await c.cancel("cp1");
+ expect(paths).toEqual(["/v1/evaluate","/v1/checkpoints/cp1","/v1/checkpoints/cp1/heartbeat","/v1/checkpoints/cp1/cancel"].map(p=>"https://private.test/prefix"+p));
+ for(const bad of ["ftp://private.test","https://u:p@private.test","https://private.test?x=1","https://private.test#id"]) expect(()=>new KastraClient(bad,"dh_test",f)).toThrow("Invalid base URL");
+ expect(paths).toHaveLength(4);
+});
+
+it("normalizes case-insensitive HTTP schemes and rejects embedded control characters", () => {
+  expect(normalizeBaseUrl("HTTPS://EXAMPLE.TEST/prefix/")).toBe("https://example.test/prefix");
+  for (const raw of ["https://exa\nmple.test", "https://example.test/pre\tfix", "HTTPS://@example.test"]) {
+    expect(() => normalizeBaseUrl(raw)).toThrow();
+  }
 });

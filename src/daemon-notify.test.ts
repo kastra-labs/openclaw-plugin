@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { clearHold, notifyHold } from "./daemon-notify.js";
+import { clearHold, notifyHold, daemonSocketPath } from "./daemon-notify.js";
 
 const sockDir = mkdtempSync(join(tmpdir(), "kastra-sock-"));
 const sockPath = join(sockDir, "daemon.sock");
@@ -23,7 +23,7 @@ afterAll(() => server.close());
 describe("daemon notify", () => {
   it("POSTs hold notification to the daemon socket", async () => {
     await notifyHold(
-      { checkpoint_id: "cp1", title: "Send email", source: "openclaw", console_url: "https://app.kastra.ai/checkpoints?focus=cp1", expires_at: "2026-06-12T12:00:00Z" },
+      { checkpoint_id: "cp1", title: "Send email", source: "openclaw", console_url: "https://app.kastra.ai/approvals?checkpoint=cp1", expires_at: "2026-06-12T12:00:00Z" },
       sockPath,
     );
     const hit = received.find((r) => r.url === "/v1/notifications/hold");
@@ -41,4 +41,12 @@ describe("daemon notify", () => {
       notifyHold({ checkpoint_id: "x", title: "t", source: "openclaw", console_url: "", expires_at: "" }, "/nonexistent/daemon.sock"),
     ).resolves.toBeUndefined();
   });
+});
+
+it("uses the selected config directory for daemon IPC",()=>{
+ expect(daemonSocketPath({KASTRA_CONFIG:"/private/kastra/config.toml"})).toBe("/private/kastra/daemon.sock");
+ expect(()=>daemonSocketPath({KASTRA_EDGE_CONFIG:"/legacy/config.toml"})).toThrow("no longer read");
+ expect(daemonSocketPath({XDG_CONFIG_HOME:"/config"})).toBe("/config/kastra/daemon.sock");
+ expect(daemonSocketPath({KASTRA_EDGE_DAEMON_SOCKET:"/explicit.sock",KASTRA_CONFIG:"one",KASTRA_EDGE_CONFIG:"two"})).toBe("/explicit.sock");
+ expect(()=>daemonSocketPath({KASTRA_CONFIG:"one",KASTRA_EDGE_CONFIG:"two"})).toThrow("no longer read");
 });

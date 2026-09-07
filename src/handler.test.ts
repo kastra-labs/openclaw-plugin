@@ -272,3 +272,26 @@ describe("createMessageSendingHandler", () => {
     expect(got).toBeUndefined();
   });
 });
+
+it("emits an escaped canonical approval link from the actual hold handler",async()=>{
+ const {handler,calls}=handlerWith({kind:"hold",envelope:{decision:"HOLD",checkpoint_id:"a&b",title:"Review",on_timeout:"DENY",expires_at:new Date(Date.now()+60000).toISOString()}});
+ await handler({...EVENT,context:{pluginConfig:{consoleBaseUrl:"https://private.test/console/"}}},{});
+ expect(calls.find(([op])=>op==="notify")?.[1].console_url).toBe("https://private.test/console/approvals?checkpoint=a%26b");
+});
+it.each(["open","closed"])("configuration validation preserves failMode=%s without creating a client",async(failMode)=>{
+ const makeClient=vi.fn();const log=vi.fn();
+ const handler=createBeforeToolCallHandler({edgeConfigPath:tomlPath,makeClient,log});
+ const result=await handler({...EVENT,context:{pluginConfig:{apiBaseUrl:"https://user:secret@example.test",failMode}}},{});
+ expect(makeClient).not.toHaveBeenCalled();expect(log).toHaveBeenCalled();expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
+ if(failMode==="closed")expect(result).toMatchObject({block:true});else expect(result).toBeUndefined();
+});
+
+it.each(["console_base_url"])("still enforces policy with invalid optional %s", async (key) => {
+  const path = join(mkdtempSync(join(tmpdir(), "kastra-console-")), "config.toml");
+  writeFileSync(path, `device_handle="dh_x"\n${key}="invalid-display-url"\n`);
+  const log = vi.fn();
+  const {handler} = handlerWith({kind:"deny", reason:"policy blocked"}, {edgeConfigPath:path, log});
+  for (let i=0;i<2;i++) expect(await handler(EVENT, {})).toMatchObject({block:true, blockReason:expect.stringContaining("policy blocked")});
+  expect(log).toHaveBeenCalledTimes(1);
+  expect(log).toHaveBeenCalledWith(expect.stringContaining("approval links disabled"));
+});

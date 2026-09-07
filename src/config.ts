@@ -1,3 +1,5 @@
+import { parse } from "smol-toml";
+import { derivedSaaSConsole, normalizeBaseUrl } from "./urls.js";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -9,18 +11,29 @@ export type ResolvedConfig = {
   jurisdiction: string;
   userEmail: string;
   consoleBaseUrl: string;
+  consoleWarning?: string;
   failMode: "open" | "closed";
   governMessages: boolean;
   holdMaxWaitMs: number;
 };
 
 export const DEFAULT_API_BASE_URL = "https://api.kastra.ai";
-export const DEFAULT_JURISDICTION = "us-east"; // mirrors kastra-edge internal/config defaults
+export const DEFAULT_JURISDICTION = "us-east"; // default policy jurisdiction for Edge-compatible configuration
 // Must stay under OpenClaw's 600 000 ms hook-budget cap, or the hook runner
 // aborts the handler and the tool call proceeds ungoverned (fail-open).
 export const DEFAULT_HOLD_MAX_WAIT_MS = 540_000;
 
 export function kastraEdgeConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  // KASTRA_EDGE_CONFIG is retired. Ignoring it would silently send a machine
+  // that still sets it to the default path (another login, or none), so its
+  // presence is a configuration error even when it names the same file as
+  // KASTRA_CONFIG. The handler surfaces that error once; under failMode
+  // "closed" it blocks, under the default "open" the plugin does not govern
+  // (the documented unconfigured contract) — the error is what makes it visible.
+  if (env.KASTRA_EDGE_CONFIG) {
+    throw new Error("KASTRA_EDGE_CONFIG is no longer read; set KASTRA_CONFIG instead");
+  }
+  if (env.KASTRA_CONFIG) return env.KASTRA_CONFIG;
   if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "kastra", "config.toml");
   return join(homedir(), ".kastra", "config.toml");
 }
@@ -31,30 +44,23 @@ const EDGE_KEYS = [
   "default_environment",
   "default_jurisdiction",
   "user_email",
-  "admin_console_url",
+  "console_base_url",
 ] as const;
 
-// Precompile one regex per key at module load.  The value pattern
-// `((?:[^"\\]|\\.)*)` matches quoted TOML string values including escape
-// sequences (e.g. `\"` inside a value).
-const EDGE_KEY_REGEXES = new Map(
-  EDGE_KEYS.map((k) => [k, new RegExp(`^${k}\\s*=\\s*"((?:[^"\\\\]|\\\\.)*)"`, "m")]),  // nosemgrep: javascript.language.regexp.dynamic-pattern -- the only interpolated value is k, drawn from the compile-time EDGE_KEYS array of literal TOML key names; no runtime or user input reaches the pattern.
-);
-
-// config.toml is flat `key = "value"` pairs; extract the handful of keys we
-// need without a TOML dependency.
+// Read only top-level string keys with a real TOML parser. Missing files mean
+// no local login; malformed/unreadable files are explicit errors, not defaults.
 export function readEdgeConfig(path: string): Record<string, string> {
   let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return {};
-  }
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
+  let parsed: Record<string, unknown>;
+  try { parsed = parse(text); }
+  catch { throw new Error("Malformed TOML in Kastra config; correct its syntax before restarting"); }
   const out: Record<string, string> = {};
   for (const key of EDGE_KEYS) {
-    const m = text.match(EDGE_KEY_REGEXES.get(key)!);
-    // Unescape backslash sequences captured from the TOML quoted string.
-    if (m) out[key] = m[1].replace(/\\(.)/g, "$1");
+    if (parsed[key] === undefined) continue;
+    if (typeof parsed[key] !== "string") throw new Error(`Kastra config ${key} must be a string`);
+    out[key] = parsed[key] as string;
   }
   return out;
 }
@@ -64,10 +70,24 @@ export function readEdgeConfig(path: string): Record<string, string> {
 export function resolveConfig(
   pluginConfig: Record<string, unknown> | undefined,
   /** @internal Test seam — omit in production; defaults to the standard edge config path. */
-  edgeConfigPath: string = kastraEdgeConfigPath(),
-): ResolvedConfig | { error: string } {
+  edgeConfigPath?: string,
+): ResolvedConfig | { error: string; failMode?: "open" | "closed" } {
   const pc = pluginConfig ?? {};
-  const edge = readEdgeConfig(edgeConfigPath);
+  let edge: Record<string, string>;
+  let apiBaseUrl: string;
+  let consoleBaseUrl = "";
+  let consoleWarning: string | undefined;
+  try {
+    edge = readEdgeConfig(edgeConfigPath ?? kastraEdgeConfigPath());
+    apiBaseUrl = normalizeBaseUrl(str(pc.apiBaseUrl) ?? edge.api_base_url ?? DEFAULT_API_BASE_URL);
+    // console_base_url is the customer console; admin_console_url names the
+    // ADMIN console and is never read as the approval-link base.
+    const console = str(pc.consoleBaseUrl) ?? str(edge.console_base_url) ?? derivedSaaSConsole(apiBaseUrl);
+    if (console) {
+      try { consoleBaseUrl = normalizeBaseUrl(console); }
+      catch { consoleWarning = "Invalid Kastra console URL; approval links disabled. Policy evaluation remains active."; }
+    }
+  } catch (error) { return { error: `Kastra configuration error: ${(error as Error).message}`, failMode: pc.failMode === "closed" ? "closed" : "open" }; }
   const deviceToken = str(pc.deviceToken) ?? edge.device_handle ?? "";
   if (!deviceToken) {
     return {
@@ -76,12 +96,13 @@ export function resolveConfig(
     };
   }
   return {
-    apiBaseUrl: str(pc.apiBaseUrl) ?? edge.api_base_url ?? DEFAULT_API_BASE_URL,
+    apiBaseUrl,
     deviceToken,
     environment: str(pc.environment) ?? edge.default_environment ?? "",
     jurisdiction: str(pc.jurisdiction) ?? edge.default_jurisdiction ?? DEFAULT_JURISDICTION,
     userEmail: edge.user_email ?? "",
-    consoleBaseUrl: str(pc.consoleBaseUrl) ?? edge.admin_console_url ?? "",
+    consoleBaseUrl,
+    consoleWarning,
     failMode: pc.failMode === "closed" ? "closed" : "open",
     governMessages: pc.governMessages === true,
     holdMaxWaitMs:

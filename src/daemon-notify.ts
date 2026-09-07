@@ -1,8 +1,8 @@
 import http from "node:http";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { kastraEdgeConfigPath } from "./config.js";
 
-// Mirrors kastra-edge/internal/notify/daemon.go: best-effort IPC to the local
+// Best-effort IPC to the local
 // kastra-edge daemon so the popover reacts instantly when OpenClaw runs on the
 // same machine. Remote gateways simply no-op (popover still gets MQTT push
 // from the backend).
@@ -15,7 +15,7 @@ export type HoldNotification = {
 };
 
 export function daemonSocketPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.KASTRA_EDGE_DAEMON_SOCKET || join(homedir(), ".kastra", "daemon.sock");
+  return env.KASTRA_EDGE_DAEMON_SOCKET || join(dirname(kastraEdgeConfigPath(env)), "daemon.sock");
 }
 
 // Fire-and-forget: never throws, never hangs past a hard 1s ceiling
