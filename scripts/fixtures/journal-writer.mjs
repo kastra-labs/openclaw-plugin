@@ -10,6 +10,8 @@ if (mode === "lock") {
   setInterval(() => {}, 1000);
 } else {
   const { createOutcomeRecorder } = await import(pathToFileURL(join(plugin, "dist/outcomes.js")));
-  const record = createOutcomeRecorder({ path, maxBytes: 2500, archives: 20, timeoutMs: 5000 });
+// The production budget: contention that does not fit inside it denies real
+// governed calls, so measuring against a larger one proves nothing.
+  const record = createOutcomeRecorder({ path, maxBytes: 2500, archives: 20, timeoutMs: 1000 });
   for (let i = 0; i < 12; i++) await record({ hook: "before_tool_call", decision: "ALLOW", disposition: "policy_allow", toolCallId: `${writer}-${i}` });
 }

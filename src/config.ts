@@ -1,6 +1,6 @@
 import { parse } from "smol-toml";
 import { derivedSaaSConsole, normalizeBaseUrl } from "./urls.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -51,9 +51,30 @@ const EDGE_KEYS = [
   "console_base_url",
 ] as const;
 
+// resolveConfig runs on every governed tool call and every outbound message, so
+// the parse below cannot run each time. Key the cache on the file's identity
+// (mtime + size): a `kastra-edge login` while the gateway is running still
+// takes effect on the next call, but an unchanged file costs one stat instead
+// of an open, a read, and a TOML parse.
+type CachedConfig = { mtimeMs: number; size: number; value: Record<string, string> };
+const edgeConfigCache = new Map<string, CachedConfig>();
+
 // Read only top-level string keys with a real TOML parser. Missing files mean
 // no local login; malformed/unreadable files are explicit errors, not defaults.
 export function readEdgeConfig(path: string): Record<string, string> {
+  let identity: { mtimeMs: number; size: number } | undefined;
+  try {
+    const info = statSync(path);
+    identity = { mtimeMs: info.mtimeMs, size: info.size };
+    const cached = edgeConfigCache.get(path);
+    if (cached && cached.mtimeMs === identity.mtimeMs && cached.size === identity.size) return cached.value;
+  } catch { /* Unstattable: fall through and let the real read report why. */ }
+  const value = parseEdgeConfig(path);
+  if (identity) edgeConfigCache.set(path, { ...identity, value });
+  return value;
+}
+
+function parseEdgeConfig(path: string): Record<string, string> {
   let text: string;
   try { text = readFileSync(path, "utf8"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
@@ -69,8 +90,6 @@ export function readEdgeConfig(path: string): Record<string, string> {
   return out;
 }
 
-// Config is static for the lifetime of the process; memoization is
-// deliberately deferred until there is a measured need for it.
 export function resolveConfig(
   pluginConfig: Record<string, unknown> | undefined,
   /** @internal Test seam — omit in production; defaults to the standard edge config path. */

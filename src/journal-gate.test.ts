@@ -37,3 +37,19 @@ describe("asynchronous durable authorization", () => {
     expect(await createBeforeToolCallHandler(deps)({ toolName: "exec", params: {} }, { abortSignal: controller.signal })).toMatchObject({ block: true });
   });
 });
+
+describe("journal failure diagnostics", () => {
+  it("names the underlying cause so an operator can find the blocked journal", async () => {
+    const logs: string[] = [];
+    const handler = createBeforeToolCallHandler({
+      edgeConfigPath: "/nonexistent/journal-fixture.toml",
+      apiPluginConfig: () => ({ deviceToken: "dh_fixture" }),
+      makeClient: () => ({ evaluate: async () => ({ kind: "allow" as const }), heartbeat: async () => {}, cancel: async () => {},
+        getCheckpoint: async () => { throw new Error("Unexpected HOLD"); } }),
+      recordOutcome: () => { throw new Error("EACCES: /var/state/outcomes.jsonl.lock"); },
+      log: (message: string) => { logs.push(message); },
+    });
+    expect(await handler({ toolName: "exec", params: {} })).toMatchObject({ block: true });
+    expect(logs.join("\n")).toContain("outcomes.jsonl.lock");
+  });
+});

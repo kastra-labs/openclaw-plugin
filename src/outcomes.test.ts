@@ -40,11 +40,20 @@ describe("durable outcome journal", () => {
     await expect(createOutcomeRecorder({ path })(outcome, AbortSignal.abort())).rejects.toThrow();
     expect(() => statSync(path)).toThrow();
   });
-  it("fails safely on a legacy lock with unknown ownership", async () => {
+  it("reclaims a stale non-directory lock instead of blocking every later outcome", async () => {
     const path = join(fixture(), "outcomes.jsonl");
     writeFileSync(path + ".lock", "");
     utimesSync(path + ".lock", new Date(0), new Date(0));
-    await expect(createOutcomeRecorder({ path })(outcome)).rejects.toThrow();
+    await Promise.resolve().then(() => createOutcomeRecorder({ path })(outcome));
+    expect(JSON.parse(readFileSync(path, "utf8")).decision).toBe("ALLOW");
+    // A second outcome must not depend on the first having cleaned up by luck.
+    await Promise.resolve().then(() => createOutcomeRecorder({ path })(outcome));
+    expect(readFileSync(path, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+  it("refuses a fresh non-directory lock rather than racing an unknown writer", async () => {
+    const path = join(fixture(), "outcomes.jsonl");
+    writeFileSync(path + ".lock", "");
+    await expect(createOutcomeRecorder({ path, timeoutMs: 60 })(outcome)).rejects.toThrow();
     expect(statSync(path + ".lock").isFile()).toBe(true);
   });
   it("performs filesystem work asynchronously", async () => {

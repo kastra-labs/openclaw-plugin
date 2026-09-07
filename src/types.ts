@@ -19,22 +19,6 @@ export type EvaluateRequest = {
   actor?: Actor;
 };
 
-export type MatchedRule = {
-  id: string;
-  jurisdiction: string;
-  model_prefix: string;
-  environment?: string;
-  reason: string;
-  priority: number;
-};
-
-export type ExecuteResponse = {
-  decision_id: string;
-  decision: "ALLOW" | "DENY";
-  reason: string;
-  matched_rule?: MatchedRule;
-};
-
 export type HoldEnvelope = {
   decision: string;
   checkpoint_id: string;
@@ -57,8 +41,6 @@ export type CheckpointState = {
   on_timeout: string;
   expires_at: string;
 };
-
-export type ApiEnvelope<T> = { success: boolean; data?: T; error?: string };
 
 export type Decision =
   | { kind: "allow"; reason?: string; decisionId?: string; ruleId?: string }

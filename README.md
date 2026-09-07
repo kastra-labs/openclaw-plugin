@@ -91,11 +91,14 @@ known DENY policy before admitting governed traffic.
 | Valid policy ALLOW / DENY | Allow / block, recording decision and rule IDs when supplied |
 | Missing token or invalid configuration | Follow `failMode`; record every unconfigured bypass |
 | Evaluation network, authentication, HTTP 4xx/5xx, or service failure | Follow `failMode`; record `evaluate_error` (a policy DENY on HTTP 403 still blocks) |
-| Malformed or contradictory API response | Block even in open mode |
+| Malformed or contradictory decision envelope | Block even in open mode |
+| Unexpected HTTP status or a body Kastra did not write | Follow `failMode`; record `evaluate_error` |
 | Human-approved HOLD | Allow with `hold_approved` |
 | Server-confirmed expired HOLD | Apply the server's effective decision with `hold_expired` |
-| Pending HOLD at a local deadline, cancellation, or wait failure | Block and attempt bounded backend cancellation; never infer timeout ALLOW locally |
-| Non-JSON, lossy, or oversized input | Block even in open mode; never evaluate a truncated prefix |
+| Pending HOLD when the host budget ends the wait, on cancellation, or on wait failure | Block and attempt bounded backend cancellation; never infer timeout ALLOW locally |
+| Pending HOLD once the review itself has expired | One final checkpoint read, then the rule's timeout decision |
+| Non-JSON or lossy input | Block even in open mode |
+| Oversized input | Clip to 256 KiB, set `x-kastra-attr-tool-input-truncated`, and evaluate |
 | Outcome journal cannot be durably written | Block even in open mode |
 
 Tool input and outbound message content are sent in full, up to 256 KiB of
@@ -103,22 +106,25 @@ serialized JSON. Recipient, channel, account, conversation, and thread context
 are included when available. The device token is used only as the authentication
 credential, not copied into the evaluation actor.
 
-Lowercase and uppercase HOLD timeout values are accepted. Missing, null, or
-empty optional correlation IDs mean unavailable metadata, not a malformed
-decision. Unknown decisions, mismatched checkpoint IDs, and contradictory
-status/decision combinations still block.
+Lowercase and uppercase HOLD timeout values are accepted; an absent or empty
+one means DENY, matching every other Kastra client. Missing, null, or empty
+optional correlation IDs mean unavailable metadata, not a malformed decision.
+Unknown decisions, mismatched checkpoint IDs, and contradictory status/decision
+combinations still block.
 
-Inputs must be plain JSON objects/arrays and JSON primitives. Undefined property
-values, Date/class instances, getters, sparse arrays, non-finite numbers,
-cycles, and custom serialization are rejected, not silently omitted or converted.
-Callers must normalize those values before invoking a tool; `failMode=open`
-does not bypass this requirement.
+Inputs must be values `JSON.stringify` represents exactly: plain objects and
+arrays, JSON primitives, `undefined` property values (dropped, as JSON does),
+and `Date` (ISO 8601). Class instances, `Date` subclasses, getters, sparse
+arrays, non-finite numbers, cycles, and custom serialization are rejected rather
+than shown to policy as something the tool will not act on; `failMode=open` does
+not bypass that.
 
 `x-kastra-attr-openclaw-channel` remains the provider name, such as `slack`,
-never an opaque destination ID. Tool calls resolve it from a legacy explicit
-provider, a routed session, or a recognized host provider ID; otherwise it is
-omitted. Message hooks supply the provider directly. Generic tool sessions may
-not identify a provider, so policies requiring it should handle missing context.
+never an opaque destination ID. Both hooks resolve it the same way: the host's
+own requester channel first, then a legacy explicit provider, a routed session,
+or a recognized host provider ID; otherwise it is omitted. Generic tool sessions
+may not identify a provider, so policies requiring it should handle missing
+context.
 Run and tool-call IDs use `x-kastra-attr-turn-id` and `x-kastra-attr-tool-use-id`.
 Message account/conversation IDs are included in the JSON tool input and local
 journal, not separate OpenClaw-only policy keys. Shared attribute names do not
@@ -138,8 +144,8 @@ provided. For example, an ALLOW can be `policy_allow`, `unconfigured`,
 `evaluate_error`, `hold_approved`, or `hold_expired`. These are not interchangeable.
 Heartbeat failures retain a count and available HTTP status; failed cancellation
 sets `cancelFailed`. Both produce static operator warnings without error bodies.
-Heartbeat authentication/permanent HTTP failures stop the HOLD; transient
-failures remain observable while checkpoint polling continues.
+A heartbeat only defers the backend's abandonment sweep, so no heartbeat failure
+ends the wait: the checkpoint read stays the single authority on the outcome.
 
 The journal excludes tool arguments, message bodies, device credentials, and
 arbitrary exception text. It can contain session/channel identifiers and resolver
@@ -161,9 +167,11 @@ queued locally and serialized across processes with a renewable directory lock.
 A crashed writer's lock is recoverable after ten seconds without renewal;
 calls during that lease may block, but later calls recover automatically.
 An interrupted final JSON line is discarded under the lock before appending.
-Use a local state filesystem, and do not manually remove a live lock. A legacy
-pre-release regular-file lock has no owner information and cannot be safely
-reclaimed: stop all gateways sharing the directory before removing that file.
+Use a local state filesystem, and do not manually remove a live lock. A plain
+file at the lock path is not a lock any writer can hold, so one left behind by
+an older build or an interrupted tool is reclaimed automatically once it is past
+the same ten-second lease; calls before that still fail closed. When the journal
+cannot be written, the operator warning names the underlying cause.
 
 ## Development And Tests
 

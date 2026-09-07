@@ -10,13 +10,20 @@ export class InvalidInputError extends Error {
   constructor() { super("Kastra cannot govern non-JSON or oversized input"); }
 }
 
+// Faithfulness, not strictness, is the goal: what policy sees must be what the
+// tool receives. Values JSON.stringify represents exactly (undefined dropped, a
+// Date as ISO 8601) are accepted; anything whose own toJSON could show policy a
+// different value than the tool acts on is refused.
 export function serializeInput(input: unknown): string {
+  if (input === undefined) throw new InvalidInputError();
   const seen = new Set<object>();
   function visit(value: unknown, depth: number): void {
     if (depth > 100) throw new InvalidInputError();
-    if (value === null || typeof value === "string" || typeof value === "boolean") return;
+    if (value === null || value === undefined || typeof value === "string" || typeof value === "boolean") return;
     if (typeof value === "number" && Number.isFinite(value)) return;
     if (typeof value !== "object" || seen.has(value)) throw new InvalidInputError();
+    // Exactly Date, never a subclass: an overridden toJSON is the evasion this guards.
+    if (Object.getPrototypeOf(value) === Date.prototype) return;
     const array = Array.isArray(value);
     if (array && Object.getPrototypeOf(value) !== Array.prototype) throw new InvalidInputError();
     if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw new InvalidInputError();
@@ -34,16 +41,18 @@ export function serializeInput(input: unknown): string {
   }
   try {
     visit(input, 0);
-    const serialized = JSON.stringify(input);
-    if (Buffer.byteLength(serialized, "utf8") > TOOL_INPUT_LIMIT) throw new InvalidInputError();
-    return serialized;
+    return JSON.stringify(input);
   } catch { throw new InvalidInputError(); }
 }
 
 export type HookEvent = Pick<ToolEvent, "toolName"> & Partial<Omit<ToolEvent, "toolName">>;
 export type HookCtx = Partial<ToolContext & MessageContext> & { messageProvider?: string };
 
+// One resolution for both hooks, so a rule keyed on the provider means the same
+// thing whether it matched a tool call or an outbound message.
 export function messageProvider(ctx: HookCtx | undefined): string | undefined {
+  // The host's own answer to "which channel is this?" outranks every inference.
+  if (ctx?.requester?.channel) return String(ctx.requester.channel);
   if (ctx?.messageProvider) return ctx.messageProvider;
   const route = parseAgentSessionKey(ctx?.sessionKey)?.rest.split(":");
   const routed = route && route.length >= 3 ? resolveGatewayMessageChannel(route[0]) : undefined;
@@ -69,7 +78,15 @@ export function buildEvaluateRequest(event: HookEvent, ctx: HookCtx | undefined,
   const toolCallId = ctx?.toolCallId ?? event.toolCallId;
   if (runId) attrs["x-kastra-attr-turn-id"] = runId;
   if (toolCallId) attrs["x-kastra-attr-tool-use-id"] = toolCallId;
-  if (event.params !== undefined) attrs["x-kastra-attr-tool-input"] = serializeInput(event.params);
+  if (event.params !== undefined) {
+    // Clip and flag rather than refuse: an oversized payload is still a call
+    // policy should get to judge, and the flag is what makes the clipping
+    // visible to a rule. Same contract as the Claude Code / Codex hook.
+    const serialized = serializeInput(event.params);
+    const clipped = truncateUTF8(serialized, TOOL_INPUT_LIMIT);
+    attrs["x-kastra-attr-tool-input"] = clipped;
+    if (clipped.length < serialized.length) attrs["x-kastra-attr-tool-input-truncated"] = "true";
+  }
   return {
     environment: cfg.environment || undefined,
     jurisdiction: cfg.jurisdiction,

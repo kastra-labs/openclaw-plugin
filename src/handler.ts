@@ -56,8 +56,10 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
         await abortable(Promise.resolve(record({ ...base, ...outcome, elapsedMs: Date.now() - started }, signal)), signal);
         signal.throwIfAborted();
       }
-      catch {
-        log("Outcome journal unavailable; action blocked");
+      catch (error) {
+        // Name the cause: this path blocks every governed call until an
+        // operator fixes it, and a generic message gives them nothing to act on.
+        log(`Outcome journal unavailable; action blocked: ${(error as Error)?.message ?? "unknown error"}`);
         return { block: true, blockReason: "Kastra could not durably record the governance outcome" };
       }
       finally { clearTimeout(timer); }
@@ -99,10 +101,14 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
       }));
       const remaining = Math.max(1, deadline - Date.now());
       const cleanupMs = Math.max(1, Math.min(1000, remaining * 0.2));
+      // The endgame is two bounded phases, not one: the final checkpoint read
+      // and the cancellation. Reserving for only one lets the wait run long
+      // enough that the journal deadline passes, replacing the hold's own
+      // outcome with a journal failure.
       try {
         const result = await waitForCheckpoint(client, env, {
           ...deps.holdWaitOpts,
-          maxWaitMs: Math.min(cfg.holdMaxWaitMs, deps.holdWaitOpts?.maxWaitMs ?? Infinity, Math.max(1, remaining - cleanupMs)),
+          maxWaitMs: Math.min(cfg.holdMaxWaitMs, deps.holdWaitOpts?.maxWaitMs ?? Infinity, Math.max(1, remaining - 2 * cleanupMs)),
           cleanupMs,
           signal,
         });
@@ -141,8 +147,10 @@ export function createMessageSendingHandler(deps: HandlerDeps = {}) {
     const params: Record<string, unknown> = { content: event.content, to: event.to, channel: ctx?.channelId ?? "" };
     for (const key of ["threadId", "replyToId"] as const) if (event[key] !== undefined) params[key] = event[key];
     for (const key of ["accountId", "conversationId"] as const) if (ctx?.[key] !== undefined) params[key] = ctx[key];
-    const result = await gate({ toolName: "openclaw_message", params, context: event.context },
-      { ...ctx, messageProvider: ctx?.messageProvider ?? ctx?.channelId }, pc);
+    // No provider injection here: both hooks resolve the channel through
+    // messageProvider() so a raw peer id can never reach the attribute on one
+    // surface while the other normalizes it.
+    const result = await gate({ toolName: "openclaw_message", params, context: event.context }, ctx, pc);
     return result?.block ? { cancel: true, cancelReason: result.blockReason } : undefined;
   };
 }

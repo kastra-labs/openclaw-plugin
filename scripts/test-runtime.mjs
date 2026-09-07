@@ -83,7 +83,8 @@ const cases = [
   { name: "deny without audit metadata", noAudit: true, decision: "DENY", disposition: "policy_deny" },
   { name: "approved without audit metadata", noAudit: true, hold: true, status: "approved", effectiveDecision: "ALLOW", allow: true, disposition: "hold_approved" },
   { name: "transient heartbeat failure", hold: true, heartbeatError: 503, status: "approved", effectiveDecision: "ALLOW", allow: true, disposition: "hold_approved" },
-  { name: "rejected heartbeat and cancellation", hold: true, heartbeatError: 401, cancelError: 503, disposition: "hold_error" },
+  { name: "rejected heartbeat and cancellation", hold: true, heartbeatError: 401, cancelError: 503, disposition: "hold_deadline" },
+  { name: "rejected heartbeat never discards an approval", hold: true, heartbeatError: 401, status: "approved", effectiveDecision: "ALLOW", allow: true, disposition: "hold_approved" },
   ...["open", "closed"].flatMap(failMode => [
     { name: `no token ${failMode}`, noToken: true, failMode, allow: failMode === "open", disposition: "unconfigured" },
     { name: `503 ${failMode}`, apiError: 503, failMode, allow: failMode === "open", disposition: "evaluate_error" },
@@ -103,7 +104,8 @@ const cases = [
   { name: "wrong checkpoint", hold: true, wrongId: true, status: "approved", effectiveDecision: "ALLOW", disposition: "hold_error" },
   { name: "contradictory checkpoint", hold: true, status: "denied", effectiveDecision: "ALLOW", disposition: "hold_error" },
   { name: "input suffix", contentRule: true, params: { command: " ".repeat(5000) + "FORBIDDEN" }, disposition: "policy_deny" },
-  { name: "oversized input", failMode: "open", params: { command: "x".repeat(300000) }, disposition: "invalid_input" },
+  { name: "oversized input", failMode: "open", params: { command: "x".repeat(300000) }, allow: true, disposition: "policy_allow", truncated: true },
+  { name: "unserializable input", failMode: "open", params: { command: 1n }, disposition: "invalid_input" },
   { name: "channel rule", channelRule: true, disposition: "policy_deny" },
   { name: "stalled evaluate", stallEvaluate: true, failMode: "open", hookMs: 500, deadline: true },
   { name: "stalled checkpoint", hold: true, stallCheckpoint: true, failMode: "open", hookMs: 500, deadline: true },
@@ -158,6 +160,8 @@ try {
         assert.equal(attrs["x-kastra-attr-openclaw-channel"], "slack");
         assert.equal(attrs["x-kastra-attr-tool-use-id"], "call-fixture");
         assert.equal(attrs["x-kastra-attr-turn-id"], "run-fixture");
+        // Oversized input is clipped and flagged, never withheld from policy.
+        assert.equal(attrs["x-kastra-attr-tool-input-truncated"], spec.truncated ? "true" : undefined);
       }
       if (spec.disposition?.startsWith("hold_")) assert.equal(records[0].checkpointId, "cp-fixture");
       if (spec.deadline) {

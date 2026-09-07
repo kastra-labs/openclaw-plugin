@@ -15,6 +15,19 @@ describe("stable policy context", () => {
   it.each(["agent:main:slack:channel:C-fixture", "agent:main:slack:work:direct:U-fixture"])("resolves the tool provider from routed session %s", sessionKey => {
     expect(buildEvaluateRequest({ toolName: "exec" }, { sessionKey, channelId: "C-fixture" }, cfg).attributes!["x-kastra-attr-openclaw-channel"]).toBe("slack");
   });
+  it("prefers the host-authoritative requester channel over an opaque tool channel ID", () => {
+    const request = buildEvaluateRequest({ toolName: "exec" }, { requester: { channel: "discord" }, channelId: "C-fixture" } as any, cfg);
+    expect(request.attributes!["x-kastra-attr-openclaw-channel"]).toBe("discord");
+  });
+  it("resolves the provider identically on the tool and message surfaces", async () => {
+    const evaluate = vi.fn(async () => ({ kind: "allow" as const }));
+    const deps = { edgeConfigPath, apiPluginConfig: () => ({ deviceToken: "dh_fixture", governMessages: true }),
+      makeClient: () => ({ evaluate, heartbeat: async () => {}, cancel: async () => {}, getCheckpoint: async () => { throw new Error("Unexpected HOLD"); } }), recordOutcome: () => {} };
+    await createMessageSendingHandler(deps)({ to: "peer", content: "Fixture" }, { channelId: "C-unregistered" });
+    const viaMessage = (evaluate.mock.calls as any)[0][0].attributes["x-kastra-attr-openclaw-channel"];
+    const viaTool = buildEvaluateRequest({ toolName: "exec" }, { channelId: "C-unregistered" }, cfg).attributes!["x-kastra-attr-openclaw-channel"];
+    expect(viaMessage).toBe(viaTool);
+  });
   it("never treats an opaque destination or a generic session as a provider", () => {
     expect(buildEvaluateRequest({ toolName: "exec" }, { channelId: "C-fixture", sessionKey: "agent:main:main" }, cfg).attributes)
       .not.toHaveProperty("x-kastra-attr-openclaw-channel");

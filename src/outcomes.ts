@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { mkdir, open, rename, type FileHandle } from "node:fs/promises";
+import { mkdir, open, rename, stat, unlink, type FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -67,6 +67,24 @@ async function repairTail(file: FileHandle): Promise<number> {
   return end;
 }
 
+// The lock is a directory, so a plain file at that path is not a lock any
+// writer could be holding — it is debris from an older build or an interrupted
+// tool. Left in place it denies every governed call forever, since the reclaim
+// path only knows how to rmdir. Reclaim it under the same lease directories
+// get: recent debris still fails the call, so this can never race a writer we
+// simply do not recognize.
+async function reclaimNonDirectoryLock(path: string, error: unknown): Promise<boolean> {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code !== "ENOTDIR" && code !== "EEXIST" && code !== "EPERM") return false;
+  const lock = path + ".lock";
+  try {
+    const info = await stat(lock);
+    if (info.isDirectory() || Date.now() - info.mtimeMs < LOCK_STALE_MS) return false;
+    await unlink(lock);
+    return true;
+  } catch { return false; }
+}
+
 export function createOutcomeRecorder(opts: { path?: string; maxBytes?: number; archives?: number; timeoutMs?: number } = {}): OutcomeRecorder {
   return async (outcome, callerSignal) => {
     const path = resolve(opts.path ?? join(process.env.OPENCLAW_STATE_DIR || join(homedir(), ".openclaw"), "kastra", "outcomes.jsonl"));
@@ -88,7 +106,8 @@ export function createOutcomeRecorder(opts: { path?: string; maxBytes?: number; 
             release = await lockfile.lock(path, { realpath: false, retries: 0, stale: LOCK_STALE_MS, update: 2000,
               onCompromised: error => { compromised = error; } });
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ELOCKED") throw error;
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== "ELOCKED" && !(await reclaimNonDirectoryLock(path, error))) throw error;
             await delay(20, signal);
           }
         }
@@ -96,25 +115,34 @@ export function createOutcomeRecorder(opts: { path?: string; maxBytes?: number; 
         file = await open(path, constants.O_APPEND | constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
         await file.chmod(0o600);
         let size = await repairTail(file);
+        // The directory entry only changes when this file is created or
+        // replaced by a rotation; syncing it on every append is a second
+        // durable barrier per governed call that records nothing new.
+        let entryChanged = size === 0;
         const line = serializeOutcome(outcome);
         check();
         if (size > 0 && size + line.length > (opts.maxBytes ?? 4 * 1024 * 1024)) {
           await file.close(); file = undefined;
           const archives = Math.max(1, Math.min(20, opts.archives ?? 4));
+          // No cancellation check between renames: the ring shifts as a unit or
+          // the next rotation reads a hole as ENOENT and drops an extra
+          // generation of history. The whole loop is bounded local renames.
           for (let i = archives; i >= 1; i--) {
-            check();
             try { await rename(i === 1 ? path : path + "." + (i - 1), path + "." + i); }
             catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
           }
           file = await open(path, constants.O_APPEND | constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
           size = 0;
+          entryChanged = true;
         }
         check();
         try {
           await file.writeFile(line);
           await file.sync();
-          const directory = await open(dirname(path), constants.O_RDONLY);
-          try { await directory.sync(); } finally { await directory.close(); }
+          if (entryChanged) {
+            const directory = await open(dirname(path), constants.O_RDONLY);
+            try { await directory.sync(); } finally { await directory.close(); }
+          }
           check();
         } catch (error) {
           // Do not leave a late ALLOW after the caller has already blocked.

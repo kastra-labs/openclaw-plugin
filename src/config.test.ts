@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -155,4 +155,25 @@ it("reports malformed and wrong-type TOML rather than falling back",()=>{
  for(const bad of ['device_handle=1', 'device_handle="broken', '[cache]\napi_base_url="https://foreign.test"']) expect(resolveConfig({},writeToml(bad))).toHaveProperty("error");
  for(const bad of ["ftp://example.test","https://user:secret@example.test","https://example.test?token=x","https://example.test#id"]) expect(resolveConfig({apiBaseUrl:bad},writeToml(minimalToken))).toHaveProperty("error");
  expect(resolveConfig({},writeToml(minimalToken+'api_base_url="https://private.test/prefix/"'))).toMatchObject({apiBaseUrl:"https://private.test/prefix",consoleBaseUrl:"",jurisdiction:"us-east"});
+});
+
+describe("config reads on the governed hot path", () => {
+  it("picks up a changed Kastra config without restarting the gateway", () => {
+    const path = writeToml(`device_handle = "dh_one"\n`);
+    expect(resolveConfig({}, path)).toMatchObject({ deviceToken: "dh_one" });
+    writeFileSync(path, `device_handle = "dh_two"\ndefault_environment = "dev"\n`);
+    expect(resolveConfig({}, path)).toMatchObject({ deviceToken: "dh_two", environment: "dev" });
+  });
+  it("does not re-parse a Kastra config that has not changed", () => {
+    const path = writeToml(`device_handle = "dh_one"\n`);
+    // A whole-second stamp so utimesSync can restore it byte-identically.
+    const stamp = new Date(1_600_000_000_000);
+    utimesSync(path, stamp, stamp);
+    expect(resolveConfig({}, path)).toMatchObject({ deviceToken: "dh_one" });
+    // Same byte length and same timestamps: indistinguishable from unchanged,
+    // so a cached read must return the first value and a re-read must not.
+    writeFileSync(path, `device_handle = "dh_two"\n`);
+    utimesSync(path, stamp, stamp);
+    expect(resolveConfig({}, path)).toMatchObject({ deviceToken: "dh_one" });
+  });
 });

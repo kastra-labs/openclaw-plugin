@@ -23,7 +23,13 @@ function optionalIdentifier(value: unknown): string | undefined {
   if (!identifier(value)) throw new KastraProtocolError();
   return value;
 }
+// on_timeout carries the rule's hold_on_timeout column verbatim, which is unset
+// for any rule that never set one. Unset means DENY everywhere else in the
+// fleet, so refusing the envelope here would deny the call for a reason no
+// reviewer chose. Only a value that is present and unrecognized is a protocol
+// error.
 function timeoutDecision(value: unknown): "ALLOW" | "DENY" {
+  if (value === undefined || value === null || value === "") return "DENY";
   const normalized = typeof value === "string" ? value.toUpperCase() : "";
   if (normalized !== "ALLOW" && normalized !== "DENY") throw new KastraProtocolError();
   return normalized;
@@ -43,7 +49,12 @@ async function readEnvelope(response: Response): Promise<Record<string, unknown>
     return envelope(body);
   }
   catch (error) {
-    if (error instanceof SyntaxError) throw new KastraProtocolError();
+    // A body that is not JSON is not a Kastra decision at all — it is a proxy,
+    // captive portal, or ingress answering in Kastra's place. That is a
+    // transport failure the caller's failMode governs, not a contradictory
+    // decision. Callers that must never fail open (checkpoint reads) treat a
+    // sub-500 KastraHttpError as terminal.
+    if (error instanceof SyntaxError) throw new KastraHttpError(response.status);
     throw error;
   }
 }
@@ -82,10 +93,9 @@ export class KastraClient {
       body: JSON.stringify(req), signal: requestSignal(timeoutMs, signal),
     });
     if (res.status === 401) throw new KastraAuthError();
-    if (![200, 202, 403].includes(res.status)) {
-      if (res.status >= 400) throw new KastraHttpError(res.status);
-      throw new KastraProtocolError();
-    }
+    // Any status the API does not use for a decision is transport noise,
+    // including a 2xx or a redirect an intermediary produced.
+    if (![200, 202, 403].includes(res.status)) throw new KastraHttpError(res.status);
     const data = await readEnvelope(res);
     if (res.status === 202) {
       const on_timeout = timeoutDecision(data.on_timeout);

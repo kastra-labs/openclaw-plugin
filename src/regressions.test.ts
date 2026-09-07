@@ -60,13 +60,22 @@ describe("review enforcement regressions", () => {
     expect(JSON.parse(request.attributes["x-kastra-attr-tool-input"])).toMatchObject({ accountId: "account-1", conversationId: "conversation-1" });
   });
 
-  it.each(["oversized", "circular", "bigint", "lossy"])("blocks %s input even in open mode", async (kind) => {
+  it.each(["circular", "bigint"])("blocks %s input even in open mode", async (kind) => {
     const f = fixture({}, { failMode: "open" });
     const circular: any = {}; circular.self = circular;
-    const params = kind === "oversized" ? { command: "x".repeat(300000) } : kind === "circular" ? circular : kind === "bigint" ? { value: 1n } : { value: undefined };
+    const params = kind === "circular" ? circular : { value: 1n };
     expect(await f.tool({ ...event, params }, ctx)).toMatchObject({ block: true });
     expect(f.client.evaluate).not.toHaveBeenCalled();
     expect(f.records[0]).toMatchObject({ decision: "DENY", disposition: "invalid_input" });
+  });
+
+  it.each(["oversized", "optional"])("governs %s input instead of blocking it unevaluated", async (kind) => {
+    const f = fixture({}, { failMode: "open" });
+    const params = kind === "oversized" ? { command: "x".repeat(300000) } : { command: "ls", cwd: undefined };
+    expect(await f.tool({ ...event, params }, ctx)).toBeUndefined();
+    expect(f.client.evaluate).toHaveBeenCalledTimes(1);
+    const attributes = (f.client.evaluate.mock.calls as any)[0][0].attributes;
+    expect(attributes["x-kastra-attr-tool-input-truncated"]).toBe(kind === "oversized" ? "true" : undefined);
   });
 
   it("rejects an array subclass whose toJSON hides policy-relevant values", async () => {
@@ -78,7 +87,7 @@ describe("review enforcement regressions", () => {
 
   it.each([
     { value: NaN }, { value: Infinity }, { value: () => "hidden" }, { value: Symbol("hidden") },
-    { value: new Date() }, { value: Array(2) }, { get value() { return "hidden"; } },
+    { value: Array(2) }, { get value() { return "hidden"; } },
     { [Symbol("hidden")]: "FORBIDDEN" },
   ])("rejects other lossy non-JSON input %j", async (params) => {
     const f = fixture({}, { failMode: "open" });
@@ -143,6 +152,19 @@ describe("review enforcement regressions", () => {
     expect(f.client.cancel).toHaveBeenCalledWith("cp-1", expect.anything());
   }, 1000);
 
+  it("reserves the endgame read and the cancellation out of the hook budget", async () => {
+    const wait = vi.spyOn(holdModule, "waitForCheckpoint").mockResolvedValue({ decision: "DENY", disposition: "hold_deadline" });
+    try {
+      // 10 s is the shape that overruns: cleanupMs is already capped at 1000 ms
+      // while the budget is small enough for two endgame phases to matter.
+      const f = fixture({ hookTimeoutMs: () => 10_000 });
+      f.client.evaluate.mockResolvedValue({ kind: "hold", envelope } as any);
+      await f.tool(event, ctx);
+      const opts = wait.mock.calls[0][2]!;
+      const holdBudget = 10_000 - Math.min(1000, 10_000 / 2);
+      expect(opts.maxWaitMs! + 2 * opts.cleanupMs!).toBeLessThanOrEqual(holdBudget);
+    } finally { wait.mockRestore(); }
+  });
   it("preserves the configured nine-minute wait when the full host budget is available", async () => {
     const wait = vi.spyOn(holdModule, "waitForCheckpoint").mockResolvedValue({ decision: "DENY", disposition: "hold_deadline" });
     try {

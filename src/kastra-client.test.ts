@@ -1,6 +1,6 @@
 import { normalizeBaseUrl } from "./urls.js";
 import { describe, expect, it } from "vitest";
-import { KastraAuthError, KastraClient, KastraProtocolError } from "./kastra-client.js";
+import { KastraAuthError, KastraClient, KastraHttpError, KastraProtocolError } from "./kastra-client.js";
 import type { EvaluateRequest } from "./types.js";
 
 const REQ: EvaluateRequest = { jurisdiction: "us", model: "openclaw", source: "openclaw" };
@@ -20,8 +20,13 @@ describe("KastraClient.evaluate", () => {
       status: 200, json: async () => { throw transportError; },
     }) as Response);
     await expect(client.evaluate(REQ)).rejects.toBe(transportError);
+    // A body Kastra did not write is a transport failure the caller's failMode
+    // governs; a well-formed envelope with a bad decision stays a protocol error.
     const invalidJson = new KastraClient("https://fixture.test", "t", async () => new Response("{"));
-    await expect(invalidJson.evaluate(REQ)).rejects.toBeInstanceOf(KastraProtocolError);
+    await expect(invalidJson.evaluate(REQ)).rejects.toBeInstanceOf(KastraHttpError);
+    const badDecision = new KastraClient("https://fixture.test", "t", async () =>
+      new Response(JSON.stringify({ success: true, data: { decision: "MAYBE", reason: "x" } })));
+    await expect(badDecision.evaluate(REQ)).rejects.toBeInstanceOf(KastraProtocolError);
   });
   it("sends auth + hold headers to /v1/evaluate", async () => {
     const f = fakeFetch(200, { success: true, data: { decision_id: "d1", decision: "ALLOW", reason: "no rule matched" } });
