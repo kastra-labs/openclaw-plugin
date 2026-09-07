@@ -19,22 +19,6 @@ export type EvaluateRequest = {
   actor?: Actor;
 };
 
-export type MatchedRule = {
-  id: string;
-  jurisdiction: string;
-  model_prefix: string;
-  environment?: string;
-  reason: string;
-  priority: number;
-};
-
-export type ExecuteResponse = {
-  decision_id: string;
-  decision: "ALLOW" | "DENY";
-  reason: string;
-  matched_rule?: MatchedRule;
-};
-
 export type HoldEnvelope = {
   decision: string;
   checkpoint_id: string;
@@ -47,17 +31,18 @@ export type HoldEnvelope = {
 
 export type CheckpointState = {
   id: string;
-  status: "pending" | "approved" | "denied" | "expired";
+  status: "pending" | "approved" | "denied" | "expired" | "cancelled" | "abandoned";
   effective_decision?: "ALLOW" | "DENY";
   resolved_by?: string;
+  resolved_by_email?: string;
+  decision_id?: string;
+  rule_id?: string;
   title: string;
   on_timeout: string;
   expires_at: string;
 };
 
-export type ApiEnvelope<T> = { success: boolean; data?: T; error?: string };
-
 export type Decision =
-  | { kind: "allow"; reason?: string }
-  | { kind: "deny"; reason: string; ruleId?: string }
+  | { kind: "allow"; reason?: string; decisionId?: string; ruleId?: string }
+  | { kind: "deny"; reason: string; decisionId?: string; ruleId?: string }
   | { kind: "hold"; envelope: HoldEnvelope };

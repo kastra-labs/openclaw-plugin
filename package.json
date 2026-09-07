@@ -1,6 +1,6 @@
 {
   "name": "@kastra_labs/openclaw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Kastra AI governance for OpenClaw — policy-enforced tool calls with human-in-the-loop holds",
   "license": "MIT",
@@ -18,7 +18,8 @@
   "files": [
     "dist/",
     "openclaw.plugin.json",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "openclaw": {
     "extensions": [
@@ -28,14 +29,19 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "check": "tsc -p tsconfig.json --noEmit && vitest run --passWithNoTests"
+    "check": "tsc -p tsconfig.json --noEmit && vitest run",
+    "test:integration": "npm run build && node scripts/test-integration.mjs",
+    "smoke": "npm run test:integration"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/proper-lockfile": "4.1.4",
+    "openclaw": "2026.9.2",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "proper-lockfile": "4.1.2",
     "smol-toml": "1.8.0"
   }
 }

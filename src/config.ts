@@ -1,6 +1,6 @@
 import { parse } from "smol-toml";
 import { derivedSaaSConsole, normalizeBaseUrl } from "./urls.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -13,15 +13,19 @@ export type ResolvedConfig = {
   consoleBaseUrl: string;
   consoleWarning?: string;
   failMode: "open" | "closed";
-  governMessages: boolean;
   holdMaxWaitMs: number;
 };
 
 export const DEFAULT_API_BASE_URL = "https://api.kastra.ai";
 export const DEFAULT_JURISDICTION = "us-east"; // default policy jurisdiction for Edge-compatible configuration
-// Must stay under OpenClaw's 600 000 ms hook-budget cap, or the hook runner
-// aborts the handler and the tool call proceeds ungoverned (fail-open).
+// Reserve time for evaluation, cancellation, and the outcome journal.
+export const DEFAULT_HOOK_TIMEOUT_MS = 600_000;
 export const DEFAULT_HOLD_MAX_WAIT_MS = 540_000;
+
+export function effectiveHookTimeout(hooks: { timeoutMs?: number; timeouts?: Record<string, number> } | undefined, hook: string): number {
+  const timeout = hooks?.timeouts?.[hook] ?? hooks?.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
+  return Number.isFinite(timeout) && timeout > 0 ? Math.min(timeout, DEFAULT_HOOK_TIMEOUT_MS) : DEFAULT_HOOK_TIMEOUT_MS;
+}
 
 export function kastraEdgeConfigPath(env: NodeJS.ProcessEnv = process.env): string {
   // KASTRA_EDGE_CONFIG is retired. Ignoring it would silently send a machine
@@ -47,9 +51,30 @@ const EDGE_KEYS = [
   "console_base_url",
 ] as const;
 
+// resolveConfig runs on every governed tool call and every outbound message, so
+// the parse below cannot run each time. Key the cache on the file's identity
+// (mtime + size): a `kastra-edge login` while the gateway is running still
+// takes effect on the next call, but an unchanged file costs one stat instead
+// of an open, a read, and a TOML parse.
+type CachedConfig = { mtimeMs: number; size: number; value: Record<string, string> };
+const edgeConfigCache = new Map<string, CachedConfig>();
+
 // Read only top-level string keys with a real TOML parser. Missing files mean
 // no local login; malformed/unreadable files are explicit errors, not defaults.
 export function readEdgeConfig(path: string): Record<string, string> {
+  let identity: { mtimeMs: number; size: number } | undefined;
+  try {
+    const info = statSync(path);
+    identity = { mtimeMs: info.mtimeMs, size: info.size };
+    const cached = edgeConfigCache.get(path);
+    if (cached && cached.mtimeMs === identity.mtimeMs && cached.size === identity.size) return cached.value;
+  } catch { /* Unstattable: fall through and let the real read report why. */ }
+  const value = parseEdgeConfig(path);
+  if (identity) edgeConfigCache.set(path, { ...identity, value });
+  return value;
+}
+
+function parseEdgeConfig(path: string): Record<string, string> {
   let text: string;
   try { text = readFileSync(path, "utf8"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
@@ -65,13 +90,11 @@ export function readEdgeConfig(path: string): Record<string, string> {
   return out;
 }
 
-// Config is static for the lifetime of the process; memoization is
-// deliberately deferred until there is a measured need for it.
 export function resolveConfig(
   pluginConfig: Record<string, unknown> | undefined,
   /** @internal Test seam — omit in production; defaults to the standard edge config path. */
   edgeConfigPath?: string,
-): ResolvedConfig | { error: string; failMode?: "open" | "closed" } {
+): ResolvedConfig | { error: string; failMode: "open" | "closed" } {
   const pc = pluginConfig ?? {};
   let edge: Record<string, string>;
   let apiBaseUrl: string;
@@ -91,6 +114,7 @@ export function resolveConfig(
   const deviceToken = str(pc.deviceToken) ?? edge.device_handle ?? "";
   if (!deviceToken) {
     return {
+      failMode: pc.failMode === "closed" ? "closed" : "open",
       error:
         "no Kastra device token: set plugins.entries.kastra.config.deviceToken in OpenClaw config, or run `kastra-edge login` on this machine",
     };
@@ -104,9 +128,8 @@ export function resolveConfig(
     consoleBaseUrl,
     consoleWarning,
     failMode: pc.failMode === "closed" ? "closed" : "open",
-    governMessages: pc.governMessages === true,
     holdMaxWaitMs:
-      typeof pc.holdMaxWaitMs === "number" && pc.holdMaxWaitMs > 0
+      typeof pc.holdMaxWaitMs === "number" && Number.isFinite(pc.holdMaxWaitMs) && pc.holdMaxWaitMs > 0
         ? Math.min(pc.holdMaxWaitMs, DEFAULT_HOLD_MAX_WAIT_MS)
         : DEFAULT_HOLD_MAX_WAIT_MS,
   };

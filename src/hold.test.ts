@@ -1,265 +1,152 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { waitForCheckpoint } from "./hold.js";
+import { KastraAuthError, KastraHttpError, KastraProtocolError } from "./kastra-client.js";
 import type { CheckpointState, HoldEnvelope } from "./types.js";
 
 const ENV: HoldEnvelope = {
-  decision: "HOLD",
-  checkpoint_id: "cp1",
-  expires_at: new Date(600_000).toISOString(), // expires at t=600s
-  on_timeout: "DENY",
-  title: "Send email",
+  decision: "HOLD", checkpoint_id: "cp1", expires_at: new Date(600000).toISOString(), on_timeout: "DENY", title: "Review",
 };
-
-// Fake client: returns queued states, then repeats the last one.
-function fakeClient(states: Array<Partial<CheckpointState>>) {
+function fixture(states: Partial<CheckpointState>[] = [{ status: "pending" }]) {
+  let time = 0; let count = 0;
   const heartbeats: number[] = [];
-  const cancels: number[] = [];
-  let i = 0;
-  let t = 0;
   const client = {
-    getCheckpoint: async () => {
-      const s = states[Math.min(i++, states.length - 1)];
-      return { id: "cp1", status: "pending", title: "t", on_timeout: "DENY", expires_at: ENV.expires_at, ...s } as CheckpointState;
-    },
-    heartbeat: async () => {
-      heartbeats.push(t);
-    },
-    cancel: async () => {
-      cancels.push(t);
-    },
+    getCheckpoint: vi.fn(async () => ({
+      id: "cp1", status: "pending", title: "Review", on_timeout: "deny", expires_at: ENV.expires_at,
+      ...states[Math.min(count++, states.length - 1)],
+    } as CheckpointState)),
+    heartbeat: vi.fn(async () => { heartbeats.push(time); }), cancel: vi.fn(async () => {}),
   };
-  const clock = { now: () => t, sleep: async (ms: number) => void (t += ms) };
-  return { client: client as any, clock, heartbeats, cancels };
+  const clock = { now: () => time, sleep: async (ms: number) => { time += ms; } };
+  return { client, clock, heartbeats };
 }
-
 describe("waitForCheckpoint", () => {
-  it("returns ALLOW when approved", async () => {
-    const { client, clock } = fakeClient([{ status: "pending" }, { status: "approved", effective_decision: "ALLOW", resolved_by: "f@e.st" }]);
-    const got = await waitForCheckpoint(client, ENV, { ...clock });
-    expect(got).toEqual({ decision: "ALLOW", resolvedBy: "f@e.st" });
+  it("keeps polling throttled to pollMs after a slow heartbeat", async () => {
+    const f = fixture();
+    const reads: number[] = [];
+    const original = f.client.getCheckpoint.getMockImplementation()!;
+    f.client.getCheckpoint.mockImplementation(async () => { reads.push(f.clock.now()); return original(); });
+    f.client.heartbeat.mockImplementation(async () => { if (f.clock.now() > 0) await f.clock.sleep(4500); });
+    await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 10000, heartbeatMs: 5000, pollMs: 5000 });
+    const polls = reads.slice(0, -1); // the last read is the endgame read, deliberately unthrottled
+    for (let i = 1; i < polls.length; i++) expect(polls[i] - polls[i - 1]).toBeGreaterThanOrEqual(5000);
+    expect(reads.length).toBeLessThanOrEqual(3);
+    expect(f.clock.now()).toBeLessThanOrEqual(10000);
   });
-
-  it("returns DENY when denied", async () => {
-    const { client, clock } = fakeClient([{ status: "denied", effective_decision: "DENY" }]);
-    const got = await waitForCheckpoint(client, ENV, { ...clock });
-    expect(got.decision).toBe("DENY");
+  it.each([500, 1500])("honors an approval read that returns after the deadline (%s ms)", async latency => {
+    const f = fixture([{ status: "pending" }, { status: "pending" }, { status: "approved", effective_decision: "ALLOW" }]);
+    const original = f.client.getCheckpoint.getMockImplementation()!;
+    let reads = 0;
+    f.client.getCheckpoint.mockImplementation(async () => { await f.clock.sleep(++reads === 3 ? latency : 1000); return original(); });
+    const result = await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 10000 });
+    expect(result).toMatchObject({ decision: "ALLOW", disposition: "hold_approved" });
+    expect(f.client.cancel).not.toHaveBeenCalled();
   });
-
-  it("applies on_timeout at the deadline", async () => {
-    const { client, clock } = fakeClient([{ status: "pending" }]);
-    const got = await waitForCheckpoint(client, ENV, { ...clock, maxWaitMs: 20_000, pollMs: 5_000 });
-    expect(got.decision).toBe("DENY"); // ENV.on_timeout
+  it("records transient heartbeat failures on a subsequent approval", async () => {
+    const f = fixture([{ status: "approved", effective_decision: "ALLOW" }]);
+    f.client.heartbeat.mockRejectedValueOnce(new KastraHttpError(503));
+    expect(await waitForCheckpoint(f.client, ENV, f.clock)).toMatchObject({ decision: "ALLOW", heartbeatFailures: 1, heartbeatStatus: 503 });
   });
-
-  it("respects on_timeout ALLOW", async () => {
-    const { client, clock } = fakeClient([{ status: "pending" }]);
-    const got = await waitForCheckpoint(client, { ...ENV, on_timeout: "ALLOW" }, { ...clock, maxWaitMs: 20_000, pollMs: 5_000 });
-    expect(got.decision).toBe("ALLOW");
+  it("keeps reading the checkpoint after an unrecoverable heartbeat rejection", async () => {
+    const f = fixture([{ status: "approved", effective_decision: "ALLOW" }]);
+    f.client.heartbeat.mockRejectedValue(new KastraAuthError());
+    expect(await waitForCheckpoint(f.client, ENV, f.clock)).toMatchObject({ decision: "ALLOW", disposition: "hold_approved", heartbeatFailures: 1, heartbeatStatus: 401 });
+    expect(f.client.getCheckpoint).toHaveBeenCalled();
   });
-
-  it("heartbeats immediately and ~every heartbeatMs", async () => {
-    const { client, clock, heartbeats } = fakeClient([{ status: "pending" }]);
-    await waitForCheckpoint(client, ENV, { ...clock, maxWaitMs: 70_000, pollMs: 5_000, heartbeatMs: 30_000 });
-    expect(heartbeats[0]).toBe(0);
-    expect(heartbeats.length).toBeGreaterThanOrEqual(3); // t=0, ~30s, ~60s
+  it("records a failed cancellation on the deadline path", async () => {
+    const f = fixture();
+    f.client.cancel.mockRejectedValue(new Error("Fixture cleanup failure"));
+    expect(await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 5000 })).toMatchObject({ decision: "DENY", disposition: "hold_deadline", cancelFailed: true });
   });
-
-  it("tolerates transient checkpoint fetch errors", async () => {
-    let calls = 0;
-    const client = {
-      getCheckpoint: async () => {
-        if (calls++ < 2) throw new Error("network blip");
-        return { id: "cp1", status: "approved", effective_decision: "ALLOW", title: "t", on_timeout: "DENY", expires_at: ENV.expires_at } as CheckpointState;
-      },
-      heartbeat: async () => {},
-      cancel: async () => {},
-    };
-    let t = 0;
-    const got = await waitForCheckpoint(client as any, ENV, { now: () => t, sleep: async (ms) => void (t += ms) });
-    expect(got.decision).toBe("ALLOW");
+  it("stops retrying a checkpoint that no longer exists", async () => {
+    const f = fixture();
+    f.client.getCheckpoint.mockRejectedValue(new KastraHttpError(404));
+    expect(await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 10000 })).toMatchObject({ decision: "DENY", disposition: "hold_error" });
+    expect(f.client.getCheckpoint).toHaveBeenCalledTimes(1);
   });
-
-  // ── Fix 1: server_now clock-skew correction ──────────────────────────────
-  //
-  // Scenario: the client's local clock reads t=1_000_000ms. The server
-  // issued an envelope with:
-  //   expires_at  = 1_005_000ms (absolute)  — only 5s from server's current wall time
-  //   server_now  = 945_000ms               — server's wall time when issuing
-  //
-  // server-intended TTL = 1_005_000 − 945_000 = 60_000ms (60 s).
-  //
-  // OLD code: deadline = min(1_000_000 + 540_000, Date.parse(expires_at))
-  //                    = min(1_540_000, 1_005_000) = 1_005_000.
-  //   Polls at t=1_000_000 → pending, sleep → t=1_005_000.
-  //   Second iteration: poll (still pending) → deadline check 1_005_000 >= 1_005_000 → DENY.
-  //   Even a last-chance read at t=1_005_000 sees pending → falls through to DENY.
-  //
-  // NEW code (skew-corrected): TTL = 60_000ms.
-  //   deadline = 1_000_000 + min(540_000, max(0, 60_000) + 30_000)
-  //            = 1_000_000 + 90_000 = 1_090_000.
-  //   Polls at t=1_000_000 → pending, sleep → t=1_005_000.
-  //   Second iteration: poll at t=1_005_000 → pending (t ≤ 1_010_000 flip point),
-  //   sleep → t=1_010_000. Third iteration: poll at t=1_010_000 → t > 1_005_000
-  //   so now returns approved ALLOW → returned immediately, deadline never hit.
-  //
-  // The approval flip point (t > 1_005_000, i.e. t > oldDeadline) ensures:
-  //   - Under OLD code: any read at t ≤ 1_005_000 still sees pending → DENY via on_timeout.
-  //   - Under NEW code: the poll at t=1_010_000 (after sleep past flip point) → ALLOW.
-  it("server_now skew correction — uses server TTL not raw expires_at (Fix 1)", async () => {
-    // Clock starts at t=1_000_000 so that Date.parse(expires_at)=1_005_000 is only 5s ahead,
-    // but the server-intended TTL is 60s.
-    const expiresAtMs = 1_005_000;
-    const serverNowMs = 945_000; // TTL = expiresAtMs − serverNowMs = 60_000ms
-    // OLD deadline = min(1_000_000 + 540_000, 1_005_000) = 1_005_000
-    // NEW deadline = 1_000_000 + min(540_000, 60_000 + 30_000) = 1_090_000
-    const oldDeadline = 1_005_000;
-    const env: HoldEnvelope = {
-      decision: "HOLD",
-      checkpoint_id: "cp1",
-      expires_at: new Date(expiresAtMs).toISOString(),
-      server_now: new Date(serverNowMs).toISOString(),
-      on_timeout: "DENY",
-      title: "skew-test",
-    };
-
-    let t = 1_000_000; // local clock — 5s "ahead" of expires_at
-    const client = {
-      // State is driven by the fake clock value, not a fixed queue.
-      // Returns pending while t <= oldDeadline so that:
-      //   - old code: sees pending at t=1_000_000, sleeps to t=1_005_000, sees
-      //     pending again (t ≤ 1_005_000), hits its deadline → DENY.
-      //   - new code: sees pending at t=1_000_000 and t=1_005_000, sleeps to
-      //     t=1_010_000, sees approved (t > oldDeadline) → ALLOW.
-      getCheckpoint: async (): Promise<CheckpointState> => {
-        if (t > oldDeadline) {
-          return { id: "cp1", status: "approved", effective_decision: "ALLOW", resolved_by: "reviewer@x", title: "t", on_timeout: "DENY", expires_at: env.expires_at };
-        }
-        return { id: "cp1", status: "pending", title: "t", on_timeout: "DENY", expires_at: env.expires_at };
-      },
-      heartbeat: async () => {},
-      cancel: async () => {},
-    };
-
-    const got = await waitForCheckpoint(client as any, env, {
-      now: () => t,
-      sleep: async (ms) => void (t += ms),
-      pollMs: 5_000,
-    });
-
-    // Old code times out at t=1_005_000 while still pending → DENY.
-    // New code polls past the old deadline to t=1_010_000 → approved ALLOW.
-    expect(got.decision).toBe("ALLOW");
-    expect(got.resolvedBy).toBe("reviewer@x");
+  it.each([
+    ["approved", "ALLOW"], ["denied", "DENY"], ["expired", "DENY"], ["cancelled", "DENY"], ["abandoned", "DENY"],
+  ] as const)("returns a server-confirmed %s outcome", async (status, decision) => {
+    const f = fixture([{ status, effective_decision: decision, resolved_by: "reviewer" }]);
+    expect(await waitForCheckpoint(f.client, ENV, f.clock)).toMatchObject({ decision, disposition: `hold_${status}`, resolvedBy: "reviewer" });
+    expect(f.client.cancel).not.toHaveBeenCalled();
   });
-
-  // ── Fix 2: last-chance read at the deadline ───────────────────────────────
-  //
-  // The approval is only reachable via the deadline-path getCheckpoint call:
-  //   call 0 (loop body, t=0):   pending → not terminal → deadline 0<10_000 → sleep → t=5_000
-  //   call 1 (loop body, t=5_000): pending → deadline 5_000<10_000 → sleep → t=10_000
-  //   call 2 (loop body, t=10_000): pending → deadline: 10_000>=10_000 → last-chance read
-  //   call 3 (last-chance read):  approved ALLOW → returned
-  //
-  // Without Fix 2 the code falls straight to on_timeout DENY after call 2.
-  it("last-chance read at deadline honors approval instead of falling to on_timeout (Fix 2)", async () => {
-    let callCount = 0;
-    const stateMap: Record<number, Partial<CheckpointState>> = {
-      0: { status: "pending" },
-      1: { status: "pending" },
-      2: { status: "pending" },
-      3: { status: "approved", effective_decision: "ALLOW", resolved_by: "last-chance@x" },
-    };
-    let t = 0;
-    const client = {
-      getCheckpoint: async () => {
-        const idx = Math.min(callCount++, 3);
-        const s = stateMap[idx] ?? { status: "pending" };
-        return { id: "cp1", status: "pending", title: "t", on_timeout: "DENY", expires_at: ENV.expires_at, ...s } as CheckpointState;
-      },
-      heartbeat: async () => {},
-      cancel: async () => {},
-    };
-
-    const env: HoldEnvelope = { ...ENV, on_timeout: "DENY" };
-    const got = await waitForCheckpoint(client as any, env, {
-      now: () => t,
-      sleep: async (ms) => void (t += ms),
-      maxWaitMs: 10_000,
-      pollMs: 5_000,
-    });
-
-    expect(got.decision).toBe("ALLOW");
-    expect(got.resolvedBy).toBe("last-chance@x");
-    expect(callCount).toBe(4); // 3 loop calls + 1 last-chance read
+  it.each([["ALLOW", "ALLOW"], ["DENY", "DENY"]] as const)("applies on_timeout=%s locally once the review itself has expired", async (on_timeout, decision) => {
+    const f = fixture();
+    const env = { ...ENV, on_timeout, server_now: new Date(0).toISOString(), expires_at: new Date(5000).toISOString() };
+    expect(await waitForCheckpoint(f.client, env, { ...f.clock, maxWaitMs: 20000 })).toMatchObject({ decision, disposition: "hold_deadline" });
+    expect(f.client.cancel).toHaveBeenCalledTimes(1);
+    expect(f.clock.now()).toBeLessThanOrEqual(20000);
   });
-
-  // ── Fix 3: AbortSignal cancellation ──────────────────────────────────────
-  //
-  // After the first sleep the signal is aborted; the post-sleep abort check
-  // fires, cancel() is called, and the function returns on_timeout immediately.
-  it("abort signal returns on_timeout and calls cancel (Fix 3)", async () => {
-    const controller = new AbortController();
-    const { client, clock, cancels } = fakeClient([{ status: "pending" }]);
-
-    // Override sleep to also abort after advancing the clock.
-    let t = 0;
-    const sleepAndAbort = async (ms: number) => {
-      t += ms;
-      controller.abort();
-    };
-
-    const got = await waitForCheckpoint(client, ENV, {
-      now: () => t,
-      sleep: sleepAndAbort,
-      pollMs: 5_000,
-      maxWaitMs: 540_000,
-      signal: controller.signal,
-    });
-
-    expect(got.decision).toBe("DENY"); // on_timeout = DENY
-    expect(cancels.length).toBeGreaterThanOrEqual(1);
+  it("denies rather than applying on_timeout=ALLOW when the host budget ends the wait early", async () => {
+    const f = fixture();
+    const env = { ...ENV, on_timeout: "ALLOW" as const, server_now: new Date(0).toISOString(), expires_at: new Date(600000).toISOString() };
+    expect(await waitForCheckpoint(f.client, env, { ...f.clock, maxWaitMs: 10000 })).toMatchObject({ decision: "DENY", disposition: "hold_deadline" });
   });
-
-  // ── Fix 4 / heartbeat cadence under slow network ─────────────────────────
-  //
-  // getCheckpoint advances fake time by 3_000ms per call (simulating a 3s
-  // network round-trip). Assert that heartbeat gaps in fake-clock time
-  // never exceed 90_000ms (the backend's stale-heartbeat threshold).
-  it("heartbeat gaps stay < 90_000ms even when getCheckpoint takes 3_000ms (Fix 4)", async () => {
-    let t = 0;
-    const heartbeatTimestamps: number[] = [];
-
-    // 20 pending states then resolve; each getCheckpoint advances clock 3_000ms.
-    const pendingCount = 20;
-    let callCount = 0;
-    const client = {
-      getCheckpoint: async () => {
-        t += 3_000;
-        callCount++;
-        if (callCount > pendingCount) {
-          return { id: "cp1", status: "approved", effective_decision: "ALLOW", title: "t", on_timeout: "DENY", expires_at: ENV.expires_at } as CheckpointState;
-        }
-        return { id: "cp1", status: "pending", title: "t", on_timeout: "DENY", expires_at: ENV.expires_at } as CheckpointState;
-      },
-      heartbeat: async () => {
-        heartbeatTimestamps.push(t);
-      },
-      cancel: async () => {},
-    };
-
-    const got = await waitForCheckpoint(client as any, ENV, {
-      now: () => t,
-      sleep: async (ms) => void (t += ms),
-      pollMs: 5_000,
-      heartbeatMs: 30_000,
-      maxWaitMs: 540_000,
-    });
-
-    expect(got.decision).toBe("ALLOW");
-    // Check that no gap between consecutive heartbeats exceeds 90_000ms.
-    for (let j = 1; j < heartbeatTimestamps.length; j++) {
-      const gap = heartbeatTimestamps[j] - heartbeatTimestamps[j - 1];
-      expect(gap).toBeLessThan(90_000);
-    }
+  it("reads once and applies on_timeout when the envelope is already expired by the server clock", async () => {
+    const f = fixture();
+    const env = { ...ENV, expires_at: new Date(1000).toISOString(), server_now: new Date(9000).toISOString(), on_timeout: "ALLOW" as const };
+    expect(await waitForCheckpoint(f.client, env, f.clock)).toMatchObject({ decision: "ALLOW", disposition: "hold_deadline" });
+    expect(f.client.getCheckpoint).toHaveBeenCalledTimes(1);
+    expect(f.client.heartbeat).not.toHaveBeenCalled();
+  });
+  it("prefers a terminal state over on_timeout on the post-deadline read", async () => {
+    const f = fixture([{ status: "pending" }, { status: "denied", effective_decision: "DENY" }]);
+    const env = { ...ENV, on_timeout: "ALLOW" as const };
+    expect(await waitForCheckpoint(f.client, env, { ...f.clock, maxWaitMs: 6000, pollMs: 5000 }))
+      .toMatchObject({ decision: "DENY", disposition: "hold_denied" });
+  });
+  it("heartbeats immediately and throughout a slow network wait", async () => {
+    const f = fixture();
+    const original = f.client.getCheckpoint.getMockImplementation()!;
+    f.client.getCheckpoint.mockImplementation(async () => { await f.clock.sleep(3000); return original(); });
+    await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 100000 });
+    expect(f.heartbeats[0]).toBe(0);
+    expect(f.heartbeats.length).toBeGreaterThanOrEqual(3);
+    for (let i = 1; i < f.heartbeats.length; i++) expect(f.heartbeats[i] - f.heartbeats[i - 1]).toBeLessThan(90000);
+  });
+  it("retries transient checkpoint reads but not protocol errors", async () => {
+    const f = fixture([{ status: "approved", effective_decision: "ALLOW" }]);
+    f.client.getCheckpoint.mockRejectedValueOnce(new Error("transient"));
+    expect((await waitForCheckpoint(f.client, ENV, f.clock)).decision).toBe("ALLOW");
+    f.client.getCheckpoint.mockRejectedValueOnce(new KastraProtocolError());
+    expect(await waitForCheckpoint(f.client, ENV, f.clock)).toMatchObject({ decision: "DENY", disposition: "hold_error" });
+    expect(f.client.cancel).toHaveBeenCalledTimes(1);
+  });
+  it("uses server TTL rather than a skewed local expiry clock", async () => {
+    const f = fixture([{ status: "pending" }, { status: "pending" }, { status: "approved", effective_decision: "ALLOW" }]);
+    await f.clock.sleep(1000000);
+    const env = { ...ENV, expires_at: new Date(1005000).toISOString(), server_now: new Date(945000).toISOString() };
+    expect((await waitForCheckpoint(f.client, env, f.clock)).decision).toBe("ALLOW");
+  });
+  it("honors an approval that only lands on the post-deadline read", async () => {
+    const f = fixture([{ status: "pending" }, { status: "pending" }, { status: "approved", effective_decision: "ALLOW" }]);
+    const result = await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 10000, pollMs: 5000 });
+    expect(result).toMatchObject({ decision: "ALLOW", disposition: "hold_approved" });
+    expect(f.client.getCheckpoint).toHaveBeenCalledTimes(3);
+  });
+  it("aborts in-flight reads and stops heartbeat/poll activity after returning", async () => {
+    const f = fixture(); const controller = new AbortController();
+    let readSignal: AbortSignal | undefined;
+    f.client.getCheckpoint.mockImplementation((async (_id: string, signal: AbortSignal) => {
+      readSignal = signal; controller.abort(); return new Promise(() => {});
+    }) as any);
+    const result = await waitForCheckpoint(f.client, ENV, { signal: controller.signal });
+    expect(result).toMatchObject({ decision: "DENY", disposition: "cancelled" });
+    expect(readSignal?.aborted).toBe(true);
+    const calls = f.client.getCheckpoint.mock.calls.length;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(f.client.getCheckpoint).toHaveBeenCalledTimes(calls);
+    expect(f.client.cancel).toHaveBeenCalledTimes(1);
+  });
+  it("bounds a hung poll, endgame read, and cancellation rather than hanging the hook", async () => {
+    const f = fixture();
+    f.client.getCheckpoint.mockImplementation(() => new Promise(() => {}));
+    f.client.cancel.mockImplementation(() => new Promise(() => {}));
+    const started = Date.now();
+    expect((await waitForCheckpoint(f.client, ENV, { maxWaitMs: 20, cleanupMs: 10 })).decision).toBe("DENY");
+    // Three bounded phases: the wait (20), the endgame read (10), the cancel (10).
+    // The margin is for scheduling noise; an unbounded phase never returns at all.
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(f.client.getCheckpoint).toHaveBeenCalledTimes(2);
   });
 });

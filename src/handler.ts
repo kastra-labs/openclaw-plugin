@@ -1,11 +1,13 @@
-import { buildEvaluateRequest, type HookCtx, type HookEvent } from "./attributes.js";
-import { resolveConfig, type ResolvedConfig } from "./config.js";
+import { abortable } from "./abort.js";
+import { buildEvaluateRequest, InvalidInputError, type HookCtx, type HookEvent } from "./attributes.js";
+import { DEFAULT_HOOK_TIMEOUT_MS, resolveConfig, type ResolvedConfig } from "./config.js";
 import { clearHold as defaultClearHold, notifyHold as defaultNotifyHold } from "./daemon-notify.js";
 import { waitForCheckpoint, type HoldWaitOpts } from "./hold.js";
-import { KastraAuthError, KastraClient } from "./kastra-client.js";
+import { KastraClient, KastraProtocolError } from "./kastra-client.js";
+import { createOutcomeRecorder, type Outcome, type OutcomeRecorder } from "./outcomes.js";
+import type { MessageEvent } from "./host-types.js";
 
 export type BeforeToolCallResult = { block: true; blockReason: string } | undefined;
-
 export type HandlerDeps = {
   edgeConfigPath?: string;
   makeClient?: (cfg: ResolvedConfig) => Pick<KastraClient, "evaluate" | "getCheckpoint" | "heartbeat" | "cancel">;
@@ -13,107 +15,142 @@ export type HandlerDeps = {
   clearHold?: typeof defaultClearHold;
   holdWaitOpts?: HoldWaitOpts;
   log?: (msg: string) => void;
-  /** Belt-and-braces fallback: getter for `api.pluginConfig` populated by the host after registration. */
   apiPluginConfig?: () => Record<string, unknown> | undefined;
+  hookTimeoutMs?: () => number;
+  recordOutcome?: OutcomeRecorder;
 };
+type LegacyConfig = { context?: { pluginConfig?: Record<string, unknown> } };
+type HookEventWithContext = HookEvent & LegacyConfig;
 
-type HookEventWithContext = HookEvent & { context?: { pluginConfig?: Record<string, unknown> } };
+function pluginConfig(deps: HandlerDeps, event: LegacyConfig): Record<string, unknown> | undefined {
+  const host = deps.apiPluginConfig?.();
+  return host && Object.keys(host).length > 0 ? host : event.context?.pluginConfig ?? host;
+}
 
-export function createBeforeToolCallHandler(deps: HandlerDeps = {}) {
-  const log = deps.log ?? ((m: string) => console.warn(`[kastra] ${m}`));
-  const edgeConfigPath = deps.edgeConfigPath;
-  const makeClient = deps.makeClient ?? ((cfg: ResolvedConfig) => new KastraClient(cfg.apiBaseUrl, cfg.deviceToken));
-  const sendHold = deps.notifyHold ?? defaultNotifyHold;
-  const dropHold = deps.clearHold ?? defaultClearHold;
+function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
+  const record = deps.recordOutcome ?? createOutcomeRecorder();
   let loggedUnconfigured = false;
   let loggedConsoleWarning = false;
-
-  return async function beforeToolCall(event: HookEventWithContext, ctx?: HookCtx): Promise<BeforeToolCallResult> {
-    const cfg = resolveConfig(event.context?.pluginConfig ?? deps.apiPluginConfig?.(), edgeConfigPath);
-    if ("error" in cfg) {
-      if (!loggedUnconfigured) {
-        loggedUnconfigured = true;
-        log(cfg.error);
-      }
-      if (cfg.failMode === "closed") return {block:true, blockReason:cfg.error};
-      return undefined; // unconfigured = ungoverned; never brick the gateway
-    }
-    if (cfg.consoleWarning && !loggedConsoleWarning) {
-      loggedConsoleWarning = true;
-      log(cfg.consoleWarning);
-    }
-    try {
-      const client = makeClient(cfg);
-      const decision = await client.evaluate(buildEvaluateRequest(event, ctx, cfg));
-
-      if (decision.kind === "allow") return undefined;
-
-      if (decision.kind === "deny") {
-        return { block: true, blockReason: `Kastra policy denied this action: ${decision.reason}` };
-      }
-
-      // HOLD — mirror kastrahook: notify the local popover (best-effort),
-      // then wait for the human to approve/deny in the Kastra console/popover.
-      const env = decision.envelope;
-      const consoleUrl = cfg.consoleBaseUrl ? `${cfg.consoleBaseUrl}/approvals?checkpoint=${encodeURIComponent(env.checkpoint_id)}` : "";
-      void sendHold({
-        checkpoint_id: env.checkpoint_id,
-        title: env.title,
-        source: "openclaw",
-        console_url: consoleUrl,
-        expires_at: env.expires_at,
-      });
-      let result;
+  const log = (message: string) => { try { (deps.log ?? console.warn)(`[kastra] ${message}`); } catch { /* Logging cannot change enforcement. */ } };
+  const bestEffort = (operation: () => Promise<void>) => {
+    try { void operation().catch(() => log("Local approval notification unavailable")); }
+    catch { log("Local approval notification unavailable"); }
+  };
+  return async (event: HookEventWithContext, ctx?: HookCtx, pc = pluginConfig(deps, event)): Promise<BeforeToolCallResult> => {
+    const started = Date.now();
+    const hostBudget = deps.hookTimeoutMs?.() ?? DEFAULT_HOOK_TIMEOUT_MS;
+    const completionDeadline = started + hostBudget - Math.min(100, hostBudget / 4);
+    const base: Pick<Outcome, "hook"> & Partial<Outcome> = {
+      hook, toolName: event.toolName, toolCallId: ctx?.toolCallId ?? event.toolCallId,
+      runId: ctx?.runId ?? event.runId, sessionKey: ctx?.sessionKey,
+      channelId: ctx?.channelId, accountId: ctx?.accountId, conversationId: ctx?.conversationId,
+    };
+    const finish = async (outcome: Pick<Outcome, "decision" | "disposition"> & Partial<Outcome>, reason: string): Promise<BeforeToolCallResult> => {
+      const remaining = completionDeadline - Date.now();
+      const journal = new AbortController();
+      const timer = setTimeout(() => journal.abort(), Math.max(1, Math.min(1000, remaining)));
+      const signal = outcome.decision === "ALLOW" && ctx?.abortSignal ? AbortSignal.any([journal.signal, ctx.abortSignal]) : journal.signal;
       try {
-        result = await waitForCheckpoint(client, env, { maxWaitMs: cfg.holdMaxWaitMs, ...deps.holdWaitOpts });
-      } catch (err) {
-        log(`hold wait failed: ${String(err)} — applying on_timeout=${env.on_timeout}`);
-        result = { decision: env.on_timeout === "ALLOW" ? ("ALLOW" as const) : ("DENY" as const) };
+        if (remaining <= 0) throw new Error("Hook completion deadline exceeded");
+        signal.throwIfAborted();
+        await abortable(Promise.resolve(record({ ...base, ...outcome, elapsedMs: Date.now() - started }, signal)), signal);
+        signal.throwIfAborted();
+      }
+      catch (error) {
+        // Name the cause: this path blocks every governed call until an
+        // operator fixes it, and a generic message gives them nothing to act on.
+        log(`Outcome journal unavailable; action blocked: ${(error as Error)?.message ?? "unknown error"}`);
+        return { block: true, blockReason: "Kastra could not durably record the governance outcome" };
+      }
+      finally { clearTimeout(timer); }
+      return outcome.decision === "DENY" ? { block: true, blockReason: reason } : undefined;
+    };
+    if (ctx?.abortSignal?.aborted) return finish({ decision: "DENY", disposition: "cancelled" }, "OpenClaw call cancelled");
+    const cfg = resolveConfig(pc, deps.edgeConfigPath);
+    base.failMode = cfg.failMode;
+    if ("error" in cfg) {
+      if (!loggedUnconfigured) { log("Kastra is unconfigured; check the device token and local configuration"); loggedUnconfigured = true; }
+      return finish({ decision: cfg.failMode === "closed" ? "DENY" : "ALLOW", disposition: "unconfigured" }, "Kastra is unconfigured and failMode=closed");
+    }
+    if (cfg.consoleWarning && !loggedConsoleWarning) { log(cfg.consoleWarning); loggedConsoleWarning = true; }
+    const budget = Math.max(1, hostBudget - Math.min(1000, hostBudget / 2));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), budget);
+    const signal = ctx?.abortSignal ? AbortSignal.any([ctx.abortSignal, controller.signal]) : controller.signal;
+    const deadline = started + budget;
+    let checkpointId: string | undefined;
+    try {
+      const request = buildEvaluateRequest(event, ctx, cfg);
+      const client = (deps.makeClient ?? ((c) => new KastraClient(c.apiBaseUrl, c.deviceToken)))(cfg);
+      const decision = await abortable(client.evaluate(request, Math.min(3000, budget), signal), signal);
+      if (signal.aborted) throw signal.reason;
+      if (decision.kind === "allow" || decision.kind === "deny") {
+        return finish({
+          decision: decision.kind === "allow" ? "ALLOW" : "DENY",
+          disposition: decision.kind === "allow" ? "policy_allow" : "policy_deny",
+          decisionId: decision.decisionId, ruleId: decision.ruleId,
+        }, `Kastra policy denied this action: ${decision.reason ?? "denied"}`);
+      }
+      if (decision.kind !== "hold") throw new KastraProtocolError();
+      const env = decision.envelope;
+      checkpointId = env.checkpoint_id;
+      bestEffort(() => (deps.notifyHold ?? defaultNotifyHold)({
+        checkpoint_id: env.checkpoint_id, title: env.title, source: "openclaw",
+        console_url: cfg.consoleBaseUrl ? `${cfg.consoleBaseUrl}/approvals?checkpoint=${encodeURIComponent(env.checkpoint_id)}` : "",
+        expires_at: env.expires_at,
+      }));
+      const remaining = Math.max(1, deadline - Date.now());
+      const cleanupMs = Math.max(1, Math.min(1000, remaining * 0.2));
+      // The endgame is two bounded phases, not one: the final checkpoint read
+      // and the cancellation. Reserving for only one lets the wait run long
+      // enough that the journal deadline passes, replacing the hold's own
+      // outcome with a journal failure.
+      try {
+        const result = await waitForCheckpoint(client, env, {
+          ...deps.holdWaitOpts,
+          maxWaitMs: Math.min(cfg.holdMaxWaitMs, deps.holdWaitOpts?.maxWaitMs ?? Infinity, Math.max(1, remaining - 2 * cleanupMs)),
+          cleanupMs,
+          signal,
+        });
+        if (result.heartbeatFailures) log("Checkpoint heartbeat failed during approval wait; see outcome diagnostics");
+        if (result.cancelFailed) log("Checkpoint cancellation failed; action remains blocked");
+        if (ctx?.abortSignal?.aborted || controller.signal.aborted) {
+          return finish({ ...result, decision: "DENY", disposition: ctx?.abortSignal?.aborted ? "cancelled" : "hook_deadline", checkpointId }, "Kastra approval wait interrupted");
+        }
+        return finish({ ...result, checkpointId }, `Kastra hold was not approved${result.resolvedBy ? " by " + result.resolvedBy : ""}`);
       } finally {
-        void dropHold(env.checkpoint_id);
+        bestEffort(() => (deps.clearHold ?? defaultClearHold)(env.checkpoint_id));
       }
-
-      if (result.decision === "ALLOW") return undefined;
-      return {
-        block: true,
-        blockReason: `Kastra hold "${env.title}" was ${result.resolvedBy ? `denied by ${result.resolvedBy}` : "not approved in time"}`,
-      };
-    } catch (err) {
-      log(err instanceof KastraAuthError ? err.message : `evaluate failed: ${String(err)}`);
-      if (cfg.failMode === "closed") {
-        return { block: true, blockReason: "Kastra is unreachable and failMode=closed" };
-      }
-      return undefined; // fail-open, mirrors kastrahook MVP behavior
+    } catch (error) {
+      const disposition = ctx?.abortSignal?.aborted ? "cancelled" : controller.signal.aborted ? "hook_deadline" :
+        error instanceof InvalidInputError ? "invalid_input" : error instanceof KastraProtocolError ? "protocol_error" :
+          checkpointId ? "hold_error" : "evaluate_error";
+      const allow = disposition === "evaluate_error" && cfg.failMode === "open";
+      log(`${disposition}: action ${allow ? "allowed by failMode=open" : "blocked"}`);
+      return finish({ decision: allow ? "ALLOW" : "DENY", disposition, checkpointId }, `Kastra could not authorize this action (failMode=${cfg.failMode})`);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
     }
   };
 }
 
+export function createBeforeToolCallHandler(deps: HandlerDeps = {}) {
+  return createGate(deps, "before_tool_call");
+}
+
 export function createMessageSendingHandler(deps: HandlerDeps = {}) {
-  const handler = createBeforeToolCallHandler(deps);
-  const edgeConfigPath = deps.edgeConfigPath;
-  return async function messageSending(
-    event: any,
-    ctx?: HookCtx & Record<string, unknown>,
-  ): Promise<{ cancel: true; cancelReason: string } | undefined> {
-    const cfg = resolveConfig(event?.context?.pluginConfig ?? deps.apiPluginConfig?.(), edgeConfigPath);
-    if ("error" in cfg) {
-      const pc = event?.context?.pluginConfig ?? deps.apiPluginConfig?.();
-      if (cfg.failMode === "closed" && pc?.governMessages === true) return {cancel:true, cancelReason:cfg.error};
-      return undefined;
-    }
-    if (!cfg.governMessages) return undefined;
-    const result = await handler(
-      {
-        toolName: "openclaw_message",
-        params: {
-          content: String(event?.content ?? "").slice(0, 2000),
-          channel: String((ctx as any)?.messageProvider ?? ""),
-        },
-        context: event?.context,
-      },
-      ctx,
-    );
-    if (result?.block) return { cancel: true, cancelReason: result.blockReason };
-    return undefined;
+  const gate = createGate(deps, "message_sending");
+  return async (event: MessageEvent & LegacyConfig, ctx?: HookCtx): Promise<{ cancel: true; cancelReason: string } | undefined> => {
+    const pc = pluginConfig(deps, event);
+    if (pc?.governMessages !== true) return undefined;
+    const params: Record<string, unknown> = { content: event.content, to: event.to, channel: ctx?.channelId ?? "" };
+    for (const key of ["threadId", "replyToId"] as const) if (event[key] !== undefined) params[key] = event[key];
+    for (const key of ["accountId", "conversationId"] as const) if (ctx?.[key] !== undefined) params[key] = ctx[key];
+    // No provider injection here: both hooks resolve the channel through
+    // messageProvider() so a raw peer id can never reach the attribute on one
+    // surface while the other normalizes it.
+    const result = await gate({ toolName: "openclaw_message", params, context: event.context }, ctx, pc);
+    return result?.block ? { cancel: true, cancelReason: result.blockReason } : undefined;
   };
 }

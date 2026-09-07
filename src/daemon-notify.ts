@@ -23,6 +23,7 @@ export function daemonSocketPath(env: NodeJS.ProcessEnv = process.env): string {
 function post(path: string, body: unknown, socketPath: string): Promise<void> {
   return new Promise((resolve) => {
     let done = false;
+    let req: http.ClientRequest | undefined;
     const finish = () => {
       if (!done) {
         done = true;
@@ -31,24 +32,29 @@ function post(path: string, body: unknown, socketPath: string): Promise<void> {
       }
     };
     const hardDeadline = setTimeout(() => {
-      req.destroy();
+      req?.destroy();
       finish();
     }, 1000);
     hardDeadline.unref?.();
-    const req = http.request(
-      { socketPath, path, method: "POST", headers: { "content-type": "application/json" }, timeout: 500 },
-      (res) => {
-        res.resume();
-        res.on("end", finish);
-        res.on("error", finish);
-      },
-    );
-    req.on("error", finish);
-    req.on("timeout", () => {
-      req.destroy();
+    try {
+      req = http.request(
+        { socketPath, path, method: "POST", headers: { "content-type": "application/json" }, timeout: 500 },
+        (res) => {
+          res.resume();
+          res.on("end", finish);
+          res.on("error", finish);
+        },
+      );
+      req.on("error", finish);
+      req.on("timeout", () => {
+        req?.destroy();
+        finish();
+      });
+      req.end(JSON.stringify(body ?? {}));
+    } catch {
+      req?.destroy();
       finish();
-    });
-    req.end(JSON.stringify(body ?? {}));
+    }
   });
 }
 
@@ -56,4 +62,4 @@ export const notifyHold = (n: HoldNotification, socketPath: string = daemonSocke
   post("/v1/notifications/hold", n, socketPath);
 
 export const clearHold = (checkpointId: string, socketPath: string = daemonSocketPath()): Promise<void> =>
-  post(`/v1/notifications/hold/${checkpointId}/clear`, null, socketPath);
+  post(`/v1/notifications/hold/${encodeURIComponent(checkpointId)}/clear`, null, socketPath);
