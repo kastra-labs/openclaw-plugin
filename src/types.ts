@@ -1,5 +1,4 @@
-// Kastra backend wire types. Source of truth:
-// kastra-edge/internal/wire/{evaluate,checkpoint,actor}.go
+// Request and response types used by the Kastra evaluation and checkpoint APIs.
 export type Actor = {
   email?: string;
   device?: string;

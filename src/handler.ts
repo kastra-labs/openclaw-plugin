@@ -1,5 +1,5 @@
 import { buildEvaluateRequest, type HookCtx, type HookEvent } from "./attributes.js";
-import { kastraEdgeConfigPath, resolveConfig, type ResolvedConfig } from "./config.js";
+import { resolveConfig, type ResolvedConfig } from "./config.js";
 import { clearHold as defaultClearHold, notifyHold as defaultNotifyHold } from "./daemon-notify.js";
 import { waitForCheckpoint, type HoldWaitOpts } from "./hold.js";
 import { KastraAuthError, KastraClient } from "./kastra-client.js";
@@ -21,11 +21,12 @@ type HookEventWithContext = HookEvent & { context?: { pluginConfig?: Record<stri
 
 export function createBeforeToolCallHandler(deps: HandlerDeps = {}) {
   const log = deps.log ?? ((m: string) => console.warn(`[kastra] ${m}`));
-  const edgeConfigPath = deps.edgeConfigPath ?? kastraEdgeConfigPath();
+  const edgeConfigPath = deps.edgeConfigPath;
   const makeClient = deps.makeClient ?? ((cfg: ResolvedConfig) => new KastraClient(cfg.apiBaseUrl, cfg.deviceToken));
   const sendHold = deps.notifyHold ?? defaultNotifyHold;
   const dropHold = deps.clearHold ?? defaultClearHold;
   let loggedUnconfigured = false;
+  let loggedConsoleWarning = false;
 
   return async function beforeToolCall(event: HookEventWithContext, ctx?: HookCtx): Promise<BeforeToolCallResult> {
     const cfg = resolveConfig(event.context?.pluginConfig ?? deps.apiPluginConfig?.(), edgeConfigPath);
@@ -34,7 +35,12 @@ export function createBeforeToolCallHandler(deps: HandlerDeps = {}) {
         loggedUnconfigured = true;
         log(cfg.error);
       }
+      if (cfg.failMode === "closed") return {block:true, blockReason:cfg.error};
       return undefined; // unconfigured = ungoverned; never brick the gateway
+    }
+    if (cfg.consoleWarning && !loggedConsoleWarning) {
+      loggedConsoleWarning = true;
+      log(cfg.consoleWarning);
     }
     try {
       const client = makeClient(cfg);
@@ -49,7 +55,7 @@ export function createBeforeToolCallHandler(deps: HandlerDeps = {}) {
       // HOLD — mirror kastrahook: notify the local popover (best-effort),
       // then wait for the human to approve/deny in the Kastra console/popover.
       const env = decision.envelope;
-      const consoleUrl = cfg.consoleBaseUrl ? `${cfg.consoleBaseUrl}/checkpoints?focus=${env.checkpoint_id}` : "";
+      const consoleUrl = cfg.consoleBaseUrl ? `${cfg.consoleBaseUrl}/approvals?checkpoint=${encodeURIComponent(env.checkpoint_id)}` : "";
       void sendHold({
         checkpoint_id: env.checkpoint_id,
         title: env.title,
@@ -84,13 +90,18 @@ export function createBeforeToolCallHandler(deps: HandlerDeps = {}) {
 
 export function createMessageSendingHandler(deps: HandlerDeps = {}) {
   const handler = createBeforeToolCallHandler(deps);
-  const edgeConfigPath = deps.edgeConfigPath ?? kastraEdgeConfigPath();
+  const edgeConfigPath = deps.edgeConfigPath;
   return async function messageSending(
     event: any,
     ctx?: HookCtx & Record<string, unknown>,
   ): Promise<{ cancel: true; cancelReason: string } | undefined> {
     const cfg = resolveConfig(event?.context?.pluginConfig ?? deps.apiPluginConfig?.(), edgeConfigPath);
-    if ("error" in cfg || !cfg.governMessages) return undefined;
+    if ("error" in cfg) {
+      const pc = event?.context?.pluginConfig ?? deps.apiPluginConfig?.();
+      if (cfg.failMode === "closed" && pc?.governMessages === true) return {cancel:true, cancelReason:cfg.error};
+      return undefined;
+    }
+    if (!cfg.governMessages) return undefined;
     const result = await handler(
       {
         toolName: "openclaw_message",

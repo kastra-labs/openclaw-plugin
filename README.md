@@ -73,5 +73,41 @@ the same blind spot the Claude Code and Codex integrations have.
 ## Version & docs
 
 **v0.1.0**, published as [`@kastra_labs/openclaw`](https://www.npmjs.com/package/@kastra_labs/openclaw)
-on npm. For the broader Kastra platform, start at the workspace docs index —
-[`../docs/README.md`](../docs/README.md).
+on npm. See [Kastra documentation](https://kastra.ai/docs) for setup and platform
+guides.
+
+## Configuration and public interfaces
+
+The plugin reads the same file as every Edge binary: `KASTRA_CONFIG`, legacy
+`KASTRA_EDGE_CONFIG`, `$XDG_CONFIG_HOME/kastra/config.toml`, then
+`~/.kastra/config.toml`. Conflicting nonempty overrides are a configuration
+error; a custom file never falls back to another workspace's credentials.
+TOML sections, literal strings, escapes and comments are parsed using
+[smol-toml](https://github.com/squirrelchat/smol-toml). Only top-level keys apply.
+Malformed files and non-string supported keys produce a logged configuration
+error. The existing unconfigured/failMode behavior is preserved.
+
+Explicit plugin options win over the file. `consoleBaseUrl` falls back to
+`console_base_url`, then legacy `admin_console_url`; neither is inferred from
+a custom API host. Links use `/approvals?checkpoint=<escaped-id>`.
+`apiBaseUrl` / `api_base_url` is a deployment root or reverse-proxy prefix,
+without `/api` or `/v1`. Trailing slashes normalize; credentials, queries,
+fragments and non-HTTP(S) schemes are rejected before any fetch. An existing
+terminal `/v1` is not stripped: correct the config instead of doubling it.
+
+`jurisdiction` is tenant-defined policy vocabulary. The existing `us-east`
+default remains; it is not converted to `US` or validated as an ISO-only code.
+`default_environment` remains a name and defaults to empty when absent.
+`device_handle` is required unless `deviceToken` is supplied. `user_email`
+defaults to empty. `api_base_url` defaults to `https://api.kastra.ai`.
+
+If your `kastra-edge help` output lists `install-openclaw`, you can also install
+with `kastra-edge install-openclaw --yes` or preview with `--dry-run`. If it lists
+`uninstall-openclaw`, remove with `kastra-edge uninstall-openclaw --yes`.
+`@kastra_labs/openclaw` is the npm package;
+`kastra` remains the host plugin entry ID. These identifiers serve different
+purposes and retain existing host configuration and permissions.
+
+An invalid optional console URL disables approval links and logs a warning;
+policy evaluation and the configured API failure mode remain active. Invalid API
+roots and malformed credentials/configuration retain explicit error handling.

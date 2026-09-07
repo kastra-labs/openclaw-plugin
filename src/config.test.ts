@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_API_BASE_URL, readEdgeConfig, resolveConfig } from "./config.js";
+import { DEFAULT_API_BASE_URL, kastraEdgeConfigPath, readEdgeConfig, resolveConfig } from "./config.js";
 
 function writeToml(content: string): string {
   const dir = mkdtempSync(join(tmpdir(), "kastra-test-"));
@@ -124,4 +124,34 @@ describe("resolveConfig", () => {
     expect(got.environment).toBe("dev");
     expect(got.consoleBaseUrl).toBe("https://app.kastra.ai");
   });
+});
+
+const minimalToken = 'device_handle="dh_test"\n';
+it("shares both config overrides and rejects conflicting files", () => {
+ expect(kastraEdgeConfigPath({KASTRA_CONFIG:"/new.toml"})).toBe("/new.toml");
+ expect(kastraEdgeConfigPath({KASTRA_EDGE_CONFIG:"/old.toml"})).toBe("/old.toml");
+ expect(kastraEdgeConfigPath({KASTRA_CONFIG:"/same.toml",KASTRA_EDGE_CONFIG:"/same.toml"})).toBe("/same.toml");
+ expect(()=>kastraEdgeConfigPath({KASTRA_CONFIG:"/new.toml",KASTRA_EDGE_CONFIG:"/old.toml"})).toThrow("different files");
+ expect(kastraEdgeConfigPath({XDG_CONFIG_HOME:"/config"})).toBe("/config/kastra/config.toml");
+ expect(kastraEdgeConfigPath({})).toMatch(/\.kastra[/\\]config.toml$/);
+});
+it("parses literal strings, Unicode escapes and sections without shadowing", () => {
+ const path=writeToml(String.raw`device_handle = 'dh_literal'
+user_email = "user\u0040example.test"
+[cache]
+api_base_url = "https://foreign.test"
+`);
+ expect(readEdgeConfig(path)).toEqual({device_handle:"dh_literal",user_email:"user@example.test"});
+});
+it("uses canonical console config, then legacy, with explicit plugin precedence",()=>{
+ for(const [content,want] of [["", ""],['admin_console_url="https://old.test/"',"https://old.test"],['console_base_url="https://new.test/"',"https://new.test"],['console_base_url="https://new.test/"\nadmin_console_url="https://old.test"',"https://new.test"]]){
+  const path=writeToml(minimalToken+content);
+  expect(resolveConfig({},path)).toMatchObject({consoleBaseUrl:want});
+  expect(resolveConfig({consoleBaseUrl:"https://explicit.test/console/"},path)).toMatchObject({consoleBaseUrl:"https://explicit.test/console"});
+ }
+});
+it("reports malformed and wrong-type TOML rather than falling back",()=>{
+ for(const bad of ['device_handle=1', 'device_handle="broken', '[cache]\napi_base_url="https://foreign.test"']) expect(resolveConfig({},writeToml(bad))).toHaveProperty("error");
+ for(const bad of ["ftp://example.test","https://user:secret@example.test","https://example.test?token=x","https://example.test#id"]) expect(resolveConfig({apiBaseUrl:bad},writeToml(minimalToken))).toHaveProperty("error");
+ expect(resolveConfig({},writeToml(minimalToken+'api_base_url="https://private.test/prefix/"'))).toMatchObject({apiBaseUrl:"https://private.test/prefix",consoleBaseUrl:"",jurisdiction:"us-east"});
 });
