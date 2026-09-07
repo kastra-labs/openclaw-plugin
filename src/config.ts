@@ -19,9 +19,14 @@ export type ResolvedConfig = {
 
 export const DEFAULT_API_BASE_URL = "https://api.kastra.ai";
 export const DEFAULT_JURISDICTION = "us-east"; // default policy jurisdiction for Edge-compatible configuration
-// Must stay under OpenClaw's 600 000 ms hook-budget cap, or the hook runner
-// aborts the handler and the tool call proceeds ungoverned (fail-open).
+// Reserve time for evaluation, cancellation, and the outcome journal.
+export const DEFAULT_HOOK_TIMEOUT_MS = 600_000;
 export const DEFAULT_HOLD_MAX_WAIT_MS = 540_000;
+
+export function effectiveHookTimeout(hooks: { timeoutMs?: number; timeouts?: Record<string, number> } | undefined, hook: string): number {
+  const timeout = hooks?.timeouts?.[hook] ?? hooks?.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
+  return Number.isFinite(timeout) && timeout > 0 ? Math.min(timeout, DEFAULT_HOOK_TIMEOUT_MS) : DEFAULT_HOOK_TIMEOUT_MS;
+}
 
 export function kastraEdgeConfigPath(env: NodeJS.ProcessEnv = process.env): string {
   // KASTRA_EDGE_CONFIG is retired. Ignoring it would silently send a machine
@@ -71,7 +76,7 @@ export function resolveConfig(
   pluginConfig: Record<string, unknown> | undefined,
   /** @internal Test seam — omit in production; defaults to the standard edge config path. */
   edgeConfigPath?: string,
-): ResolvedConfig | { error: string; failMode?: "open" | "closed" } {
+): ResolvedConfig | { error: string; failMode: "open" | "closed" } {
   const pc = pluginConfig ?? {};
   let edge: Record<string, string>;
   let apiBaseUrl: string;
@@ -91,6 +96,7 @@ export function resolveConfig(
   const deviceToken = str(pc.deviceToken) ?? edge.device_handle ?? "";
   if (!deviceToken) {
     return {
+      failMode: pc.failMode === "closed" ? "closed" : "open",
       error:
         "no Kastra device token: set plugins.entries.kastra.config.deviceToken in OpenClaw config, or run `kastra-edge login` on this machine",
     };
@@ -106,7 +112,7 @@ export function resolveConfig(
     failMode: pc.failMode === "closed" ? "closed" : "open",
     governMessages: pc.governMessages === true,
     holdMaxWaitMs:
-      typeof pc.holdMaxWaitMs === "number" && pc.holdMaxWaitMs > 0
+      typeof pc.holdMaxWaitMs === "number" && Number.isFinite(pc.holdMaxWaitMs) && pc.holdMaxWaitMs > 0
         ? Math.min(pc.holdMaxWaitMs, DEFAULT_HOLD_MAX_WAIT_MS)
         : DEFAULT_HOLD_MAX_WAIT_MS,
   };

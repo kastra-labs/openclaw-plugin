@@ -2,8 +2,11 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createBeforeToolCallHandler, createMessageSendingHandler } from "./handler.js";
+import { createBeforeToolCallHandler as toolHandler, createMessageSendingHandler as messageHandler, type HandlerDeps } from "./handler.js";
 import type { Decision } from "./types.js";
+
+const createBeforeToolCallHandler = (deps: HandlerDeps = {}) => toolHandler({ recordOutcome: () => {}, ...deps });
+const createMessageSendingHandler = (deps: HandlerDeps = {}) => messageHandler({ recordOutcome: () => {}, ...deps });
 
 // Real TOML so resolveConfig succeeds without plugin config.
 const tomlPath = join(mkdtempSync(join(tmpdir(), "kastra-h-")), "config.toml");
@@ -116,19 +119,9 @@ describe("before_tool_call handler", () => {
     expect(logSpy).toHaveBeenCalledTimes(1);
   });
 
-  // --- Fix 3: orphaned-hold protection — waitForCheckpoint genuinely REJECTS ---
-  //
-  // These tests MUST reach the `await sleep(pollMs)` at hold.ts:91 (OUTSIDE any
-  // try) and let the rejection propagate into handler.ts's catch. A naive setup
-  // (maxWaitMs:1 + expired envelope) races the deadline return against the sleep
-  // throw and can silently take the on_timeout DEADLINE path instead — a false
-  // pin. To force the catch deterministically we give a LARGE server-intended
-  // TTL (server_now + far-future expires_at) so the deadline is far away on the
-  // first iteration; getCheckpoint stays pending; sleep always rejects → the
-  // first iteration is guaranteed to reach sleep and throw. We additionally
-  // assert the `hold wait failed:` log to PROVE the catch (not the deadline)
-  // produced the result.
-  it("hold wait REJECTS: dropHold still fires and catch applies on_timeout=DENY (blocks)", async () => {
+  // Force a wait failure independently of deadline timing; verify its recorded
+  // disposition and notification cleanup for both timeout policies.
+  it("hold wait failure denies and clears the notification with on_timeout=DENY", async () => {
     const now = Date.now();
     const env = {
       decision: "HOLD",
@@ -142,22 +135,23 @@ describe("before_tool_call handler", () => {
     };
     const calls: any[] = [];
     const logSpy = vi.fn();
+    const recordOutcome = vi.fn();
 
     const handler = createBeforeToolCallHandler({
       edgeConfigPath: tomlPath,
       log: logSpy,
+      recordOutcome,
       notifyHold: async (n) => void calls.push(["notify", n]),
       clearHold: async (id) => void calls.push(["clear", id]),
       makeClient: () =>
         ({
           evaluate: async () => ({ kind: "hold", envelope: env }),
           // Always pending → the loop never resolves early; it must hit sleep.
-          getCheckpoint: async () => ({ id: "cp1", status: "pending", effective_decision: "DENY", title: "t", on_timeout: "DENY", expires_at: env.expires_at }),
+          getCheckpoint: async () => ({ id: "cp1", status: "pending", title: "t", on_timeout: "DENY", expires_at: env.expires_at }),
           heartbeat: async () => {},
           cancel: async () => {},
         }) as any,
       holdWaitOpts: {
-        // sleep at hold.ts:91 rejects → propagates out of waitForCheckpoint.
         sleep: async () => {
           throw new Error("boom");
         },
@@ -165,15 +159,13 @@ describe("before_tool_call handler", () => {
     });
 
     const got = await handler(EVENT, {});
-    // Catch applied on_timeout=DENY → should block.
     expect(got).toMatchObject({ block: true });
-    // PROOF the catch (not the deadline path) ran: the catch logs this string.
-    expect(logSpy.mock.calls.some((c) => String(c[0]).includes("hold wait failed:"))).toBe(true);
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ decision: "DENY", disposition: "hold_error" }));
     // finally{} guarantees dropHold fired.
     expect(calls.some(([op, id]: any) => op === "clear" && id === "cp1")).toBe(true);
   });
 
-  it("hold wait REJECTS: catch applies on_timeout=ALLOW (allows through) AND dropHold fires", async () => {
+  it("hold wait failure denies and clears the notification even with on_timeout=ALLOW", async () => {
     const now = Date.now();
     const env = {
       decision: "HOLD",
@@ -185,16 +177,18 @@ describe("before_tool_call handler", () => {
     };
     const calls: any[] = [];
     const logSpy = vi.fn();
+    const recordOutcome = vi.fn();
 
     const handler = createBeforeToolCallHandler({
       edgeConfigPath: tomlPath,
       log: logSpy,
+      recordOutcome,
       notifyHold: async (n) => void calls.push(["notify", n]),
       clearHold: async (id) => void calls.push(["clear", id]),
       makeClient: () =>
         ({
           evaluate: async () => ({ kind: "hold", envelope: env }),
-          getCheckpoint: async () => ({ id: "cp2", status: "pending", effective_decision: "ALLOW", title: "t", on_timeout: "ALLOW", expires_at: env.expires_at }),
+          getCheckpoint: async () => ({ id: "cp2", status: "pending", title: "t", on_timeout: "ALLOW", expires_at: env.expires_at }),
           heartbeat: async () => {},
           cancel: async () => {},
         }) as any,
@@ -206,11 +200,8 @@ describe("before_tool_call handler", () => {
     });
 
     const got = await handler(EVENT, {});
-    // on_timeout=ALLOW distinguishes the catch's on_timeout branch from BOTH a
-    // failMode-closed default AND any deny-bias fallback → an ALLOW result here
-    // can only have come from the catch reading env.on_timeout.
-    expect(got).toBeUndefined();
-    expect(logSpy.mock.calls.some((c) => String(c[0]).includes("hold wait failed:"))).toBe(true);
+    expect(got).toMatchObject({ block: true });
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ decision: "DENY", disposition: "hold_error" }));
     expect(calls.some(([op, id]: any) => op === "clear" && id === "cp2")).toBe(true);
   });
 });
@@ -230,7 +221,7 @@ describe("createMessageSendingHandler", () => {
           cancel: async () => {},
         }) as any,
     });
-    const got = await handler({ content: "Hello!", context: {} }, { messageProvider: "slack" } as any);
+    const got = await handler({ to: "recipient", content: "Hello!", context: {} }, { channelId: "slack" });
     expect(got).toMatchObject({ cancel: true });
     expect(got!.cancelReason).toContain("no outbound");
   });
@@ -250,7 +241,7 @@ describe("createMessageSendingHandler", () => {
           cancel: async () => {},
         }) as any,
     });
-    const got = await handler({ content: "Hello!" }, {} as any);
+    const got = await handler({ to: "recipient", content: "Hello!" }, {});
     expect(got).toBeUndefined();
     expect(evaluateSpy).not.toHaveBeenCalled();
   });
@@ -268,7 +259,7 @@ describe("createMessageSendingHandler", () => {
           cancel: async () => {},
         }) as any,
     });
-    const got = await handler({ content: "Hello!" }, {} as any);
+    const got = await handler({ to: "recipient", content: "Hello!" }, {});
     expect(got).toBeUndefined();
   });
 });

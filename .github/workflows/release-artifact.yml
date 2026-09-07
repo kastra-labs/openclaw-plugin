@@ -1,0 +1,30 @@
+name: Verified release artifact
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:integration
+      - run: npm audit --omit=dev
+      # Explicit build is required: .npmrc disables prepack/prepublish scripts.
+      - run: npm run build
+      - run: mkdir release
+      - run: npm pack --ignore-scripts --pack-destination release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kastra-openclaw-package
+          path: release/*.tgz
+          if-no-files-found: error

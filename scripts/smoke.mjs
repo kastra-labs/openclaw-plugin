@@ -1,12 +1,11 @@
-// Usage: node scripts/smoke.mjs ['<shell command>']
-// Requires: npm run build; kastra-edge login done on this machine.
-import { createBeforeToolCallHandler } from "../dist/handler.js";
+// Backward-compatible entry point for the no-login, packed-plugin smoke suite.
+import { spawnSync } from "node:child_process";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const command = process.argv[2] ?? 'gog gmail send --to test@example.com --subject "hi" --body "hello"';
-const handler = createBeforeToolCallHandler();
-console.log(`[smoke] evaluating: exec → ${command}`);
-const res = await handler(
-  { toolName: "exec", params: { command } },
-  { sessionKey: "smoke-test", agentId: "main", messageProvider: "cli" },
-);
-console.log("[smoke] result:", res ?? "(allowed)");
+if (process.argv.length > 2) throw new Error("Usage: node scripts/smoke.mjs (no login or command argument required)");
+const result = spawnSync("npm", ["run", "test:integration"], {
+  cwd: dirname(dirname(fileURLToPath(import.meta.url))), stdio: "inherit",
+});
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;

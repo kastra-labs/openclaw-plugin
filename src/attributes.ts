@@ -1,22 +1,46 @@
 import type { ResolvedConfig } from "./config.js";
 import type { EvaluateRequest } from "./types.js";
+import type { MessageContext, ToolContext, ToolEvent } from "./host-types.js";
 
-// Same cap kastrahook applies to x-kastra-attr-tool-input (4 KiB).
-export const TOOL_INPUT_LIMIT = 4096;
+// Never send a prefix that can hide policy-relevant input.
+export const TOOL_INPUT_LIMIT = 256 * 1024;
 
-export type HookEvent = {
-  toolName: string;
-  params?: Record<string, unknown>;
-  toolKind?: string;
-};
+export class InvalidInputError extends Error {
+  constructor() { super("Kastra cannot govern non-JSON or oversized input"); }
+}
 
-export type HookCtx = {
-  agentId?: string;
-  sessionKey?: string;
-  messageProvider?: string;
-  /** Reserved — not yet mapped to an attribute; messageProvider carries the channel surface. */
-  channelId?: string;
-};
+export function serializeInput(input: unknown): string {
+  const seen = new Set<object>();
+  function visit(value: unknown, depth: number): void {
+    if (depth > 100) throw new InvalidInputError();
+    if (value === null || typeof value === "string" || typeof value === "boolean") return;
+    if (typeof value === "number" && Number.isFinite(value)) return;
+    if (typeof value !== "object" || seen.has(value)) throw new InvalidInputError();
+    const array = Array.isArray(value);
+    if (array && Object.getPrototypeOf(value) !== Array.prototype) throw new InvalidInputError();
+    if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw new InvalidInputError();
+    seen.add(value);
+    const keys = Reflect.ownKeys(value);
+    if (array && keys.length !== value.length + 1) throw new InvalidInputError();
+    for (const key of keys) {
+      if (array && key === "length") continue;
+      if (typeof key !== "string" || (array && !/^(0|[1-9][0-9]*)$/.test(key))) throw new InvalidInputError();
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+      if (!descriptor.enumerable || !("value" in descriptor)) throw new InvalidInputError();
+      visit(descriptor.value, depth + 1);
+    }
+    seen.delete(value);
+  }
+  try {
+    visit(input, 0);
+    const serialized = JSON.stringify(input);
+    if (Buffer.byteLength(serialized, "utf8") > TOOL_INPUT_LIMIT) throw new InvalidInputError();
+    return serialized;
+  } catch { throw new InvalidInputError(); }
+}
+
+export type HookEvent = Pick<ToolEvent, "toolName"> & Partial<Omit<ToolEvent, "toolName">>;
+export type HookCtx = Partial<ToolContext & MessageContext>;
 
 // Canonical attribute mapping. Keys mirror cmd/kastrahook/pre_tool.go so
 // rules written for Claude Code / Codex port to OpenClaw unchanged.
@@ -30,16 +54,12 @@ export function buildEvaluateRequest(event: HookEvent, ctx: HookCtx | undefined,
   if (event.toolKind) attrs["x-kastra-attr-tool-kind"] = event.toolKind;
   if (ctx?.sessionKey) attrs["x-kastra-attr-session"] = String(ctx.sessionKey);
   if (ctx?.agentId) attrs["x-kastra-attr-openclaw-agent"] = String(ctx.agentId);
-  if (ctx?.messageProvider) attrs["x-kastra-attr-openclaw-channel"] = String(ctx.messageProvider);
-  if (event.params && Object.keys(event.params).length > 0) {
-    let serialized: string;
-    try {
-      serialized = JSON.stringify(event.params);
-    } catch {
-      serialized = "<unserializable>"; // not JSON on purpose: parse must fail loudly, and audit shows the gap
-    }
-    attrs["x-kastra-attr-tool-input"] = truncateUTF8(serialized, TOOL_INPUT_LIMIT);
-  }
+  if (ctx?.channelId) attrs["x-kastra-attr-openclaw-channel"] = ctx.channelId;
+  if (ctx?.accountId) attrs["x-kastra-attr-openclaw-account"] = ctx.accountId;
+  if (ctx?.conversationId) attrs["x-kastra-attr-openclaw-conversation"] = ctx.conversationId;
+  if (ctx?.runId) attrs["x-kastra-attr-openclaw-run"] = ctx.runId;
+  if (ctx?.toolCallId) attrs["x-kastra-attr-openclaw-tool-call"] = ctx.toolCallId;
+  if (event.params !== undefined) attrs["x-kastra-attr-tool-input"] = serializeInput(event.params);
   return {
     environment: cfg.environment || undefined,
     jurisdiction: cfg.jurisdiction,
@@ -49,7 +69,6 @@ export function buildEvaluateRequest(event: HookEvent, ctx: HookCtx | undefined,
     source: "openclaw",
     actor: {
       email: cfg.userEmail || undefined,
-      device: cfg.deviceToken,
       os: process.platform,
       client: "openclaw-plugin",
     },

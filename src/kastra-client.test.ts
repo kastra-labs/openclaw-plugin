@@ -1,6 +1,6 @@
 import { normalizeBaseUrl } from "./urls.js";
 import { describe, expect, it } from "vitest";
-import { KastraAuthError, KastraClient } from "./kastra-client.js";
+import { KastraAuthError, KastraClient, KastraProtocolError } from "./kastra-client.js";
 import type { EvaluateRequest } from "./types.js";
 
 const REQ: EvaluateRequest = { jurisdiction: "us", model: "openclaw", source: "openclaw" };
@@ -14,6 +14,15 @@ function fakeFetch(status: number, body: unknown): typeof fetch {
 }
 
 describe("KastraClient.evaluate", () => {
+  it("keeps response-body transport failures distinct from malformed JSON", async () => {
+    const transportError = new TypeError("connection interrupted");
+    const client = new KastraClient("https://fixture.test", "t", async () => ({
+      status: 200, json: async () => { throw transportError; },
+    }) as Response);
+    await expect(client.evaluate(REQ)).rejects.toBe(transportError);
+    const invalidJson = new KastraClient("https://fixture.test", "t", async () => new Response("{"));
+    await expect(invalidJson.evaluate(REQ)).rejects.toBeInstanceOf(KastraProtocolError);
+  });
   it("sends auth + hold headers to /v1/evaluate", async () => {
     const f = fakeFetch(200, { success: true, data: { decision_id: "d1", decision: "ALLOW", reason: "no rule matched" } });
     const c = new KastraClient("https://demo.kastra.ai", "dh_x", f);
@@ -26,14 +35,14 @@ describe("KastraClient.evaluate", () => {
 
   it("maps 200 ALLOW", async () => {
     const c = new KastraClient("https://x", "t", fakeFetch(200, { success: true, data: { decision_id: "d", decision: "ALLOW", reason: "ok" } }));
-    expect(await c.evaluate(REQ)).toEqual({ kind: "allow", reason: "ok" });
+    expect(await c.evaluate(REQ)).toEqual({ kind: "allow", reason: "ok", decisionId: "d", ruleId: undefined });
   });
 
   it("maps DENY with rule id (also on 403)", async () => {
     const body = { success: true, data: { decision_id: "d", decision: "DENY", reason: "blocked", matched_rule: { id: "r1", jurisdiction: "us", model_prefix: "openclaw", reason: "blocked", priority: 1 } } };
     for (const status of [200, 403]) {
       const c = new KastraClient("https://x", "t", fakeFetch(status, body));
-      expect(await c.evaluate(REQ)).toEqual({ kind: "deny", reason: "blocked", ruleId: "r1" });
+      expect(await c.evaluate(REQ)).toEqual({ kind: "deny", reason: "blocked", ruleId: "r1", decisionId: "d" });
     }
   });
 
@@ -58,7 +67,7 @@ describe("KastraClient.evaluate", () => {
   it("evaluate reports upstream status for non-JSON 5xx", async () => {
     const f = (async () => new Response("<html>Bad Gateway</html>", { status: 502 })) as typeof fetch;
     const c = new KastraClient("https://x", "t", f);
-    await expect(c.evaluate(REQ)).rejects.toThrow("/v1/evaluate upstream error (502)");
+    await expect(c.evaluate(REQ)).rejects.toThrow("Kastra API unavailable");
   });
 });
 
@@ -73,7 +82,7 @@ describe("KastraClient.getCheckpoint", () => {
   it("getCheckpoint reports status for non-JSON 5xx", async () => {
     const f = (async () => new Response("<html>Bad Gateway</html>", { status: 502 })) as typeof fetch;
     const c = new KastraClient("https://x", "t", f);
-    await expect(c.getCheckpoint("cp1")).rejects.toThrow("checkpoint fetch failed (502)");
+    await expect(c.getCheckpoint("cp1")).rejects.toThrow("Kastra API unavailable");
   });
 });
 
@@ -101,7 +110,7 @@ describe("KastraClient.cancel", () => {
 
 it("preserves a deployment prefix across every checkpoint operation", async()=>{
  const paths:string[]=[];
- const f=(async(input:RequestInfo|URL)=>{paths.push(String(input));return new Response(JSON.stringify({success:true,data:{decision:"ALLOW",id:"cp1",status:"pending"}}));}) as typeof fetch;
+ const f=(async(input:RequestInfo|URL)=>{paths.push(String(input));return new Response(JSON.stringify({success:true,data:{decision:"ALLOW",decision_id:"d1",reason:"ok",id:"cp1",status:"pending",title:"t",on_timeout:"deny",expires_at:"2026-09-07T00:00:00Z"}}));}) as typeof fetch;
  const c=new KastraClient("https://private.test/prefix///","dh_test",f);
  await c.evaluate(REQ);await c.getCheckpoint("cp1");await c.heartbeat("cp1");await c.cancel("cp1");
  expect(paths).toEqual(["/v1/evaluate","/v1/checkpoints/cp1","/v1/checkpoints/cp1/heartbeat","/v1/checkpoints/cp1/cancel"].map(p=>"https://private.test/prefix"+p));

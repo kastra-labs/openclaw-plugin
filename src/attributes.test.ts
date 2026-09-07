@@ -18,7 +18,7 @@ describe("buildEvaluateRequest", () => {
   it("maps an exec email send to canonical attributes", () => {
     const req = buildEvaluateRequest(
       { toolName: "exec", params: { command: "gog gmail send --to a@b.com --subject Hi --body Hello" } },
-      { sessionKey: "s1", agentId: "main", messageProvider: "whatsapp" },
+      { sessionKey: "s1", agentId: "main", channelId: "whatsapp" },
       CFG,
     );
     expect(req.source).toBe("openclaw");
@@ -27,7 +27,8 @@ describe("buildEvaluateRequest", () => {
     expect(req.workload_type).toBe("personal-assistant");
     expect(req.environment).toBe("dev");
     expect(req.jurisdiction).toBe("us");
-    expect(req.actor).toMatchObject({ email: "f@e.st", device: "dh_x", client: "openclaw-plugin" });
+    expect(req.actor).toMatchObject({ email: "f@e.st", client: "openclaw-plugin" });
+    expect(req.actor?.device).toBeUndefined();
     const a = req.attributes!;
     expect(a["x-kastra-attr-tool"]).toBe("exec");
     expect(a["x-kastra-attr-source-event"]).toBe("pre_tool");
@@ -51,11 +52,10 @@ describe("buildEvaluateRequest", () => {
     expect(req.attributes!["x-kastra-attr-tool-input"]).toBeUndefined();
   });
 
-  it("falls back to a sentinel for unserializable params", () => {
+  it("rejects unserializable params instead of evaluating a sentinel", () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    const req = buildEvaluateRequest({ toolName: "exec", params: circular }, undefined, CFG);
-    expect(req.attributes!["x-kastra-attr-tool-input"]).toBe("<unserializable>");
+    expect(() => buildEvaluateRequest({ toolName: "exec", params: circular }, undefined, CFG)).toThrow();
   });
 });
 

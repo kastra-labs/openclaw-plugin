@@ -1,0 +1,7 @@
+{
+  "id": "kastra-test-sentinel",
+  "name": "Kastra Test Sentinel",
+  "activation": { "onStartup": true },
+  "contracts": { "tools": ["test_sentinel"] },
+  "configSchema": { "type": "object", "additionalProperties": false }
+}
