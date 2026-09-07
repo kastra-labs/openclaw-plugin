@@ -13,7 +13,6 @@ export type ResolvedConfig = {
   consoleBaseUrl: string;
   consoleWarning?: string;
   failMode: "open" | "closed";
-  governMessages: boolean;
   holdMaxWaitMs: number;
 };
 
@@ -110,7 +109,6 @@ export function resolveConfig(
     consoleBaseUrl,
     consoleWarning,
     failMode: pc.failMode === "closed" ? "closed" : "open",
-    governMessages: pc.governMessages === true,
     holdMaxWaitMs:
       typeof pc.holdMaxWaitMs === "number" && Number.isFinite(pc.holdMaxWaitMs) && pc.holdMaxWaitMs > 0
         ? Math.min(pc.holdMaxWaitMs, DEFAULT_HOLD_MAX_WAIT_MS)

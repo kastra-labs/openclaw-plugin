@@ -96,15 +96,15 @@ describe("KastraClient.cancel", () => {
     expect((fakeFetch as any).lastInit.headers.authorization).toBe("Bearer tok");
   });
 
-  it("swallows network errors (best-effort)", async () => {
+  it("reports network errors to the bounded cleanup caller", async () => {
     const f = (async () => { throw new Error("network down"); }) as typeof fetch;
     const c = new KastraClient("https://x", "t", f);
-    await expect(c.cancel("cp1")).resolves.toBeUndefined();
+    await expect(c.cancel("cp1")).rejects.toThrow("network down");
   });
 
-  it("swallows non-2xx responses (best-effort)", async () => {
+  it("reports non-2xx responses to the bounded cleanup caller", async () => {
     const c = new KastraClient("https://x", "t", fakeFetch(500, { error: "internal" }));
-    await expect(c.cancel("cp1")).resolves.toBeUndefined();
+    await expect(c.cancel("cp1")).rejects.toThrow();
   });
 });
 

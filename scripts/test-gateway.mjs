@@ -19,19 +19,19 @@ const api = createServer(async (req, res) => {
     if (scenario === "unavailable") { res.writeHead(503); res.end("{}"); return; }
     if (scenario.startsWith("hold")) {
       res.writeHead(202); res.end(JSON.stringify({ success: true, data: {
-        decision: "HOLD", checkpoint_id: "cp-gateway", title: "Fixture", on_timeout: "ALLOW",
+        decision: "HOLD", checkpoint_id: "cp-gateway", title: "Fixture", on_timeout: "allow",
         expires_at: new Date(Date.now() + 600000).toISOString(), server_now: new Date().toISOString(),
       } })); return;
     }
     const decision = scenario === "deny" ? "DENY" : scenario === "malformed" ? "UNKNOWN" : "ALLOW";
     res.writeHead(decision === "DENY" ? 403 : 200);
-    res.end(JSON.stringify({ success: true, data: { decision_id: "d-gateway", decision, reason: "Fixture" } })); return;
+    res.end(JSON.stringify({ success: true, data: { decision_id: scenario === "allow-no-audit" ? "" : "d-gateway", decision, reason: "Fixture" } })); return;
   }
   if (req.method === "GET") {
     const status = scenario === "hold-approved" ? "approved" : scenario === "hold-denied" ? "denied" : scenario === "hold-expired" ? "expired" : "pending";
     res.end(JSON.stringify({ success: true, data: {
       id: "cp-gateway", status, effective_decision: status === "pending" ? undefined : status === "denied" ? "DENY" : "ALLOW",
-      decision_id: "d-hold", rule_id: "r-hold", title: "Fixture", on_timeout: "allow", expires_at: new Date().toISOString(),
+      rule_id: "", title: "Fixture", on_timeout: "allow", expires_at: new Date().toISOString(),
     } })); return;
   }
   res.end(JSON.stringify({ success: true }));
@@ -81,6 +81,7 @@ try {
   assert.ok(ready, output.slice(-10000));
   for (const [name, allow, disposition] of [
     ["allow", true, "policy_allow"], ["deny", false, "policy_deny"], ["unavailable", false, "evaluate_error"],
+    ["allow-no-audit", true, "policy_allow"],
     ["malformed", false, "protocol_error"], ["hold-approved", true, "hold_approved"], ["hold-denied", false, "hold_denied"],
     ["hold-expired", true, "hold_expired"], ["hold-pending", false, "hold_deadline"],
   ]) {

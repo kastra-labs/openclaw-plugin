@@ -32,7 +32,7 @@ try {
   };
   mkdirSync(env.HOME);
   mkdirSync(env.OPENCLAW_STATE_DIR);
-  const runs = ["test-runtime.mjs", "test-gateway.mjs", "test-gateway.mjs"];
+  const runs = ["test-journal.mjs", "test-runtime.mjs", "test-gateway.mjs", "test-gateway.mjs"];
   for (const [index, script] of runs.entries()) {
     const state = join(temporary, "run-" + index);
     mkdirSync(state);

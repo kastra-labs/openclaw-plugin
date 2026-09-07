@@ -10,7 +10,6 @@ const CFG: ResolvedConfig = {
   userEmail: "f@e.st",
   consoleBaseUrl: "",
   failMode: "open",
-  governMessages: false,
   holdMaxWaitMs: 540_000,
 };
 

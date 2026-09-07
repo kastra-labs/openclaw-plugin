@@ -57,7 +57,7 @@ describe("review enforcement regressions", () => {
     const request = (f.client.evaluate.mock.calls as any)[0][0];
     expect(JSON.parse(request.attributes["x-kastra-attr-tool-input"])).toMatchObject({ content, to: "recipient", channel: "slack", threadId: "thread-1" });
     expect(request.attributes["x-kastra-attr-openclaw-channel"]).toBe("slack");
-    expect(request.attributes["x-kastra-attr-openclaw-account"]).toBe("account-1");
+    expect(JSON.parse(request.attributes["x-kastra-attr-tool-input"])).toMatchObject({ accountId: "account-1", conversationId: "conversation-1" });
   });
 
   it.each(["oversized", "circular", "bigint", "lossy"])("blocks %s input even in open mode", async (kind) => {
@@ -152,6 +152,19 @@ describe("review enforcement regressions", () => {
       expect(wait.mock.calls[0][2]?.maxWaitMs).toBe(540000);
     } finally { wait.mockRestore(); }
   });
+  it("retains HOLD diagnostics when caller cancellation determines the final outcome", async () => {
+    const controller = new AbortController();
+    const wait = vi.spyOn(holdModule, "waitForCheckpoint").mockImplementation(async () => {
+      controller.abort();
+      return { decision: "DENY", disposition: "cancelled", heartbeatFailures: 1, heartbeatStatus: 503, cancelFailed: true };
+    });
+    try {
+      const f = fixture();
+      f.client.evaluate.mockResolvedValue({ kind: "hold", envelope } as any);
+      expect(await f.tool(event, { ...ctx, abortSignal: controller.signal })).toMatchObject({ block: true });
+      expect(f.records).toMatchObject([{ decision: "DENY", disposition: "cancelled", heartbeatFailures: 1, heartbeatStatus: 503, cancelFailed: true }]);
+    } finally { wait.mockRestore(); }
+  });
 
   it.each(["notifyHold", "clearHold"])("notification failure in %s cannot turn a HOLD denial into allow", async (name) => {
     const f = fixture({ [name]: () => { throw new Error("IPC failure"); }, holdWaitOpts: { maxWaitMs: 1 } }, { failMode: "open" });
@@ -165,7 +178,7 @@ describe("wire validation regressions", () => {
     [200, { success: true, data: { decision_id: "d", decision: "UNKNOWN", reason: "x" } }],
     [200, { success: false, data: { decision_id: "d", decision: "ALLOW", reason: "x" } }],
     [403, { success: true, data: { decision_id: "d", decision: "ALLOW", reason: "x" } }],
-    [200, { success: true, data: { decision: "ALLOW", reason: "x" } }],
+    [200, { success: true, data: { decision: "ALLOW", decision_id: 42, reason: "x" } }],
     [202, { success: true, data: { ...envelope, on_timeout: "unknown" } }],
     [202, { success: true, data: { ...envelope, expires_at: "bad-date" } }],
     [202, { success: true, data: { ...envelope, decision: "ALLOW" } }],

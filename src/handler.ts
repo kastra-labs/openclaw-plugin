@@ -22,6 +22,11 @@ export type HandlerDeps = {
 type LegacyConfig = { context?: { pluginConfig?: Record<string, unknown> } };
 type HookEventWithContext = HookEvent & LegacyConfig;
 
+function pluginConfig(deps: HandlerDeps, event: LegacyConfig): Record<string, unknown> | undefined {
+  const host = deps.apiPluginConfig?.();
+  return host && Object.keys(host).length > 0 ? host : event.context?.pluginConfig ?? host;
+}
+
 function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
   const record = deps.recordOutcome ?? createOutcomeRecorder();
   let loggedUnconfigured = false;
@@ -31,23 +36,34 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
     try { void operation().catch(() => log("Local approval notification unavailable")); }
     catch { log("Local approval notification unavailable"); }
   };
-  return async (event: HookEventWithContext, ctx?: HookCtx): Promise<BeforeToolCallResult> => {
+  return async (event: HookEventWithContext, ctx?: HookCtx, pc = pluginConfig(deps, event)): Promise<BeforeToolCallResult> => {
     const started = Date.now();
+    const hostBudget = deps.hookTimeoutMs?.() ?? DEFAULT_HOOK_TIMEOUT_MS;
+    const completionDeadline = started + hostBudget - Math.min(100, hostBudget / 4);
     const base: Pick<Outcome, "hook"> & Partial<Outcome> = {
       hook, toolName: event.toolName, toolCallId: ctx?.toolCallId ?? event.toolCallId,
       runId: ctx?.runId ?? event.runId, sessionKey: ctx?.sessionKey,
       channelId: ctx?.channelId, accountId: ctx?.accountId, conversationId: ctx?.conversationId,
     };
-    const finish = (outcome: Pick<Outcome, "decision" | "disposition"> & Partial<Outcome>, reason: string): BeforeToolCallResult => {
-      try { record({ ...base, ...outcome, elapsedMs: Date.now() - started }); }
+    const finish = async (outcome: Pick<Outcome, "decision" | "disposition"> & Partial<Outcome>, reason: string): Promise<BeforeToolCallResult> => {
+      const remaining = completionDeadline - Date.now();
+      const journal = new AbortController();
+      const timer = setTimeout(() => journal.abort(), Math.max(1, Math.min(1000, remaining)));
+      const signal = outcome.decision === "ALLOW" && ctx?.abortSignal ? AbortSignal.any([journal.signal, ctx.abortSignal]) : journal.signal;
+      try {
+        if (remaining <= 0) throw new Error("Hook completion deadline exceeded");
+        signal.throwIfAborted();
+        await abortable(Promise.resolve(record({ ...base, ...outcome, elapsedMs: Date.now() - started }, signal)), signal);
+        signal.throwIfAborted();
+      }
       catch {
         log("Outcome journal unavailable; action blocked");
         return { block: true, blockReason: "Kastra could not durably record the governance outcome" };
       }
+      finally { clearTimeout(timer); }
       return outcome.decision === "DENY" ? { block: true, blockReason: reason } : undefined;
     };
     if (ctx?.abortSignal?.aborted) return finish({ decision: "DENY", disposition: "cancelled" }, "OpenClaw call cancelled");
-    const pc = deps.apiPluginConfig?.() ?? event.context?.pluginConfig;
     const cfg = resolveConfig(pc, deps.edgeConfigPath);
     base.failMode = cfg.failMode;
     if ("error" in cfg) {
@@ -55,7 +71,6 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
       return finish({ decision: cfg.failMode === "closed" ? "DENY" : "ALLOW", disposition: "unconfigured" }, "Kastra is unconfigured and failMode=closed");
     }
     if (cfg.consoleWarning && !loggedConsoleWarning) { log(cfg.consoleWarning); loggedConsoleWarning = true; }
-    const hostBudget = deps.hookTimeoutMs?.() ?? DEFAULT_HOOK_TIMEOUT_MS;
     const budget = Math.max(1, hostBudget - Math.min(1000, hostBudget / 2));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), budget);
@@ -91,8 +106,10 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
           cleanupMs,
           signal,
         });
+        if (result.heartbeatFailures) log("Checkpoint heartbeat failed during approval wait; see outcome diagnostics");
+        if (result.cancelFailed) log("Checkpoint cancellation failed; action remains blocked");
         if (ctx?.abortSignal?.aborted || controller.signal.aborted) {
-          return finish({ decision: "DENY", disposition: ctx?.abortSignal?.aborted ? "cancelled" : "hook_deadline", checkpointId }, "Kastra approval wait interrupted");
+          return finish({ ...result, decision: "DENY", disposition: ctx?.abortSignal?.aborted ? "cancelled" : "hook_deadline", checkpointId }, "Kastra approval wait interrupted");
         }
         return finish({ ...result, checkpointId }, `Kastra hold was not approved${result.resolvedBy ? " by " + result.resolvedBy : ""}`);
       } finally {
@@ -119,11 +136,13 @@ export function createBeforeToolCallHandler(deps: HandlerDeps = {}) {
 export function createMessageSendingHandler(deps: HandlerDeps = {}) {
   const gate = createGate(deps, "message_sending");
   return async (event: MessageEvent & LegacyConfig, ctx?: HookCtx): Promise<{ cancel: true; cancelReason: string } | undefined> => {
-    const pc = deps.apiPluginConfig?.() ?? event.context?.pluginConfig;
+    const pc = pluginConfig(deps, event);
     if (pc?.governMessages !== true) return undefined;
     const params: Record<string, unknown> = { content: event.content, to: event.to, channel: ctx?.channelId ?? "" };
     for (const key of ["threadId", "replyToId"] as const) if (event[key] !== undefined) params[key] = event[key];
-    const result = await gate({ toolName: "openclaw_message", params, context: event.context }, ctx);
+    for (const key of ["accountId", "conversationId"] as const) if (ctx?.[key] !== undefined) params[key] = ctx[key];
+    const result = await gate({ toolName: "openclaw_message", params, context: event.context },
+      { ...ctx, messageProvider: ctx?.messageProvider ?? ctx?.channelId }, pc);
     return result?.block ? { cancel: true, cancelReason: result.blockReason } : undefined;
   };
 }

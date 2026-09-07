@@ -81,7 +81,6 @@ describe("resolveConfig", () => {
     expect(got.apiBaseUrl).toBe(DEFAULT_API_BASE_URL);
     expect(got.jurisdiction).toBe("us-east");
     expect(got.failMode).toBe("open");
-    expect(got.governMessages).toBe(false);
     expect(got.holdMaxWaitMs).toBe(540_000);
   });
 

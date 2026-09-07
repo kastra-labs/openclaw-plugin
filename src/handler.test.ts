@@ -160,7 +160,7 @@ describe("before_tool_call handler", () => {
 
     const got = await handler(EVENT, {});
     expect(got).toMatchObject({ block: true });
-    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ decision: "DENY", disposition: "hold_error" }));
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ decision: "DENY", disposition: "hold_error" }), expect.any(AbortSignal));
     // finally{} guarantees dropHold fired.
     expect(calls.some(([op, id]: any) => op === "clear" && id === "cp1")).toBe(true);
   });
@@ -201,7 +201,7 @@ describe("before_tool_call handler", () => {
 
     const got = await handler(EVENT, {});
     expect(got).toMatchObject({ block: true });
-    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ decision: "DENY", disposition: "hold_error" }));
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ decision: "DENY", disposition: "hold_error" }), expect.any(AbortSignal));
     expect(calls.some(([op, id]: any) => op === "clear" && id === "cp2")).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 import type { ResolvedConfig } from "./config.js";
 import type { EvaluateRequest } from "./types.js";
 import type { MessageContext, ToolContext, ToolEvent } from "./host-types.js";
+import { parseAgentSessionKey, resolveGatewayMessageChannel } from "openclaw/plugin-sdk/routing";
 
 // Never send a prefix that can hide policy-relevant input.
 export const TOOL_INPUT_LIMIT = 256 * 1024;
@@ -40,10 +41,18 @@ export function serializeInput(input: unknown): string {
 }
 
 export type HookEvent = Pick<ToolEvent, "toolName"> & Partial<Omit<ToolEvent, "toolName">>;
-export type HookCtx = Partial<ToolContext & MessageContext>;
+export type HookCtx = Partial<ToolContext & MessageContext> & { messageProvider?: string };
 
-// Canonical attribute mapping. Keys mirror cmd/kastrahook/pre_tool.go so
-// rules written for Claude Code / Codex port to OpenClaw unchanged.
+export function messageProvider(ctx: HookCtx | undefined): string | undefined {
+  if (ctx?.messageProvider) return ctx.messageProvider;
+  const route = parseAgentSessionKey(ctx?.sessionKey)?.rest.split(":");
+  const routed = route && route.length >= 3 ? resolveGatewayMessageChannel(route[0]) : undefined;
+  // Tool channelId may be an opaque peer ID; only accept a registered provider.
+  return routed ?? resolveGatewayMessageChannel(ctx?.channelId);
+}
+
+// Shared attribute names match the hook vocabulary. Tool names and provider-
+// specific input schemas still need matching policy conditions.
 export function buildEvaluateRequest(event: HookEvent, ctx: HookCtx | undefined, cfg: ResolvedConfig): EvaluateRequest {
   const attrs: Record<string, string> = {
     "x-kastra-attr-tool": event.toolName,
@@ -54,11 +63,12 @@ export function buildEvaluateRequest(event: HookEvent, ctx: HookCtx | undefined,
   if (event.toolKind) attrs["x-kastra-attr-tool-kind"] = event.toolKind;
   if (ctx?.sessionKey) attrs["x-kastra-attr-session"] = String(ctx.sessionKey);
   if (ctx?.agentId) attrs["x-kastra-attr-openclaw-agent"] = String(ctx.agentId);
-  if (ctx?.channelId) attrs["x-kastra-attr-openclaw-channel"] = ctx.channelId;
-  if (ctx?.accountId) attrs["x-kastra-attr-openclaw-account"] = ctx.accountId;
-  if (ctx?.conversationId) attrs["x-kastra-attr-openclaw-conversation"] = ctx.conversationId;
-  if (ctx?.runId) attrs["x-kastra-attr-openclaw-run"] = ctx.runId;
-  if (ctx?.toolCallId) attrs["x-kastra-attr-openclaw-tool-call"] = ctx.toolCallId;
+  const provider = messageProvider(ctx);
+  if (provider) attrs["x-kastra-attr-openclaw-channel"] = provider;
+  const runId = ctx?.runId ?? event.runId;
+  const toolCallId = ctx?.toolCallId ?? event.toolCallId;
+  if (runId) attrs["x-kastra-attr-turn-id"] = runId;
+  if (toolCallId) attrs["x-kastra-attr-tool-use-id"] = toolCallId;
   if (event.params !== undefined) attrs["x-kastra-attr-tool-input"] = serializeInput(event.params);
   return {
     environment: cfg.environment || undefined,

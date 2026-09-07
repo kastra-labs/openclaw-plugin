@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { waitForCheckpoint } from "./hold.js";
-import { KastraProtocolError } from "./kastra-client.js";
+import { KastraAuthError, KastraHttpError, KastraProtocolError } from "./kastra-client.js";
 import type { CheckpointState, HoldEnvelope } from "./types.js";
 
 const ENV: HoldEnvelope = {
@@ -20,6 +20,43 @@ function fixture(states: Partial<CheckpointState>[] = [{ status: "pending" }]) {
   return { client, clock, heartbeats };
 }
 describe("waitForCheckpoint", () => {
+  it("recomputes the final-read boundary after a slow heartbeat", async () => {
+    const f = fixture();
+    const reads: number[] = [];
+    const original = f.client.getCheckpoint.getMockImplementation()!;
+    f.client.getCheckpoint.mockImplementation(async () => { reads.push(f.clock.now()); return original(); });
+    f.client.heartbeat.mockImplementation(async () => { if (f.clock.now() > 0) await f.clock.sleep(4500); });
+    await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 10000, heartbeatMs: 5000 });
+    expect(reads).toEqual([0, 9500]);
+  });
+  it.each([500, 1500])("bounds a final approval read taking %s ms", async latency => {
+    const f = fixture([{ status: "pending" }, { status: "pending" }, { status: "approved", effective_decision: "ALLOW" }]);
+    const original = f.client.getCheckpoint.getMockImplementation()!;
+    let reads = 0;
+    f.client.getCheckpoint.mockImplementation(async () => { await f.clock.sleep(++reads === 3 ? latency : 1000); return original(); });
+    const result = await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 10000 });
+    expect(result).toMatchObject(latency === 500 ? { decision: "ALLOW", disposition: "hold_approved" } : { decision: "DENY", disposition: "hold_deadline" });
+    expect(reads).toBe(3);
+    expect(f.client.cancel).toHaveBeenCalledTimes(latency === 500 ? 0 : 1);
+  });
+  it("records transient heartbeat failures on a subsequent approval", async () => {
+    const f = fixture([{ status: "approved", effective_decision: "ALLOW" }]);
+    f.client.heartbeat.mockRejectedValueOnce(new KastraHttpError(503));
+    expect(await waitForCheckpoint(f.client, ENV, f.clock)).toMatchObject({ decision: "ALLOW", heartbeatFailures: 1, heartbeatStatus: 503 });
+  });
+  it("stops on heartbeat authentication rejection and records failed cancellation", async () => {
+    const f = fixture([{ status: "approved", effective_decision: "ALLOW" }]);
+    f.client.heartbeat.mockRejectedValue(new KastraAuthError());
+    f.client.cancel.mockRejectedValue(new Error("Fixture cleanup failure"));
+    expect(await waitForCheckpoint(f.client, ENV, f.clock)).toMatchObject({ decision: "DENY", disposition: "hold_error", heartbeatFailures: 1, heartbeatStatus: 401, cancelFailed: true });
+    expect(f.client.getCheckpoint).not.toHaveBeenCalled();
+  });
+  it("stops retrying a checkpoint that no longer exists", async () => {
+    const f = fixture();
+    f.client.getCheckpoint.mockRejectedValue(new KastraHttpError(404));
+    expect(await waitForCheckpoint(f.client, ENV, { ...f.clock, maxWaitMs: 10000 })).toMatchObject({ decision: "DENY", disposition: "hold_error" });
+    expect(f.client.getCheckpoint).toHaveBeenCalledTimes(1);
+  });
   it.each([
     ["approved", "ALLOW"], ["denied", "DENY"], ["expired", "DENY"], ["cancelled", "DENY"], ["abandoned", "DENY"],
   ] as const)("returns a server-confirmed %s outcome", async (status, decision) => {
