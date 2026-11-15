@@ -21,9 +21,10 @@ const api = createServer(async (req, res) => {
   for await (const chunk of req) raw += chunk;
   res.setHeader("content-type", "application/json");
   if (semantic) return semanticFixture.handle(req, res, raw, scenario);
-  if (req.url === "/v1/evaluate") {
+  if (req.url === "/v1/hooks/evaluate") {
     evaluated++;
     if (scenario === "unavailable") { res.writeHead(503); res.end("{}"); return; }
+    res.setHeader("X-Kastra-Evaluation-Surface", "agent_hook");
     if (scenario.startsWith("hold")) {
       res.writeHead(202); res.end(JSON.stringify({ success: true, data: {
         decision: "HOLD", checkpoint_id: "cp-gateway", title: "Fixture", on_timeout: "allow",

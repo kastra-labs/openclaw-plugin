@@ -9,7 +9,7 @@ function fakeFetch(status: number, body: unknown): typeof fetch {
   return (async (url: any, init: any) => {
     (fakeFetch as any).lastUrl = String(url);
     (fakeFetch as any).lastInit = init;
-    return new Response(JSON.stringify(body), { status });
+    return new Response(JSON.stringify(body), { status, headers: { "X-Kastra-Evaluation-Surface": "agent_hook" } });
   }) as typeof fetch;
 }
 
@@ -28,11 +28,11 @@ describe("KastraClient.evaluate", () => {
       new Response(JSON.stringify({ success: true, data: { decision: "MAYBE", reason: "x" } })));
     await expect(badDecision.evaluate(REQ)).rejects.toBeInstanceOf(KastraProtocolError);
   });
-  it("sends auth + hold headers to /v1/evaluate", async () => {
+  it("sends auth + hold headers to /v1/hooks/evaluate", async () => {
     const f = fakeFetch(200, { success: true, data: { decision_id: "d1", decision: "ALLOW", reason: "no rule matched" } });
     const c = new KastraClient("https://demo.kastra.ai", "dh_x", f);
     await c.evaluate(REQ);
-    expect((fakeFetch as any).lastUrl).toBe("https://demo.kastra.ai/v1/evaluate");
+    expect((fakeFetch as any).lastUrl).toBe("https://demo.kastra.ai/v1/hooks/evaluate");
     const headers = (fakeFetch as any).lastInit.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer dh_x");
     expect(headers["accept-kastra-hold"]).toBe("1");
@@ -66,7 +66,7 @@ describe("KastraClient.evaluate", () => {
     const f = fakeFetch(200, { success: true, data: { decision_id: "d", decision: "ALLOW", reason: "ok" } });
     const c = new KastraClient("https://demo.kastra.ai/", "t", f);
     await c.evaluate(REQ);
-    expect((fakeFetch as any).lastUrl).toBe("https://demo.kastra.ai/v1/evaluate");
+    expect((fakeFetch as any).lastUrl).toBe("https://demo.kastra.ai/v1/hooks/evaluate");
   });
 
   it("evaluate reports upstream status for non-JSON 5xx", async () => {
@@ -115,10 +115,10 @@ describe("KastraClient.cancel", () => {
 
 it("preserves a deployment prefix across every checkpoint operation", async()=>{
  const paths:string[]=[];
- const f=(async(input:RequestInfo|URL)=>{paths.push(String(input));return new Response(JSON.stringify({success:true,data:{decision:"ALLOW",decision_id:"d1",reason:"ok",id:"cp1",status:"pending",title:"t",on_timeout:"deny",expires_at:"2026-09-07T00:00:00Z"}}));}) as typeof fetch;
+ const f=(async(input:RequestInfo|URL)=>{paths.push(String(input));return new Response(JSON.stringify({success:true,data:{decision:"ALLOW",decision_id:"d1",reason:"ok",id:"cp1",status:"pending",title:"t",on_timeout:"deny",expires_at:"2026-09-07T00:00:00Z"}}), {headers:{"X-Kastra-Evaluation-Surface":"agent_hook"}});}) as typeof fetch;
  const c=new KastraClient("https://private.test/prefix///","dh_test",f);
  await c.evaluate(REQ);await c.getCheckpoint("cp1");await c.heartbeat("cp1");await c.cancel("cp1");
- expect(paths).toEqual(["/v1/evaluate","/v1/checkpoints/cp1","/v1/checkpoints/cp1/heartbeat","/v1/checkpoints/cp1/cancel"].map(p=>"https://private.test/prefix"+p));
+ expect(paths).toEqual(["/v1/hooks/evaluate","/v1/checkpoints/cp1","/v1/checkpoints/cp1/heartbeat","/v1/checkpoints/cp1/cancel"].map(p=>"https://private.test/prefix"+p));
  for(const bad of ["ftp://private.test","https://u:p@private.test","https://private.test?x=1","https://private.test#id"]) expect(()=>new KastraClient(bad,"dh_test",f)).toThrow("Invalid base URL");
  expect(paths).toHaveLength(4);
 });
@@ -128,4 +128,22 @@ it("normalizes case-insensitive HTTP schemes and rejects embedded control charac
   for (const raw of ["https://exa\nmple.test", "https://example.test/pre\tfix", "HTTPS://@example.test"]) {
     expect(() => normalizeBaseUrl(raw)).toThrow();
   }
+});
+
+it.each([404, 405, 501])("refuses a missing hook route (%s) without legacy fallback", async status => {
+  const urls:string[]=[];
+  const c=new KastraClient("https://fixture.test", "token", async url=>{ urls.push(String(url)); return new Response("unsupported",{status}); });
+  await expect(c.evaluate(REQ)).rejects.toBeInstanceOf(KastraProtocolError);
+  expect(urls).toEqual(["https://fixture.test/v1/hooks/evaluate"]);
+});
+it.each([200,202,403])("requires agent-hook confirmation on decisions (%s)",async status=>{
+ const data=status===202?{decision:"HOLD",checkpoint_id:"cp",title:"review",expires_at:"2026-12-01T00:00:00Z"}:{decision:status===403?"DENY":"ALLOW",reason:"fixture"};
+ for(const header of [undefined,"direct_evaluate","mcp_gateway"]){
+  const c=new KastraClient("https://fixture.test","token",async()=>new Response(JSON.stringify({success:true,data}),{status,headers:header?{"X-Kastra-Evaluation-Surface":header}:{}}));
+  await expect(c.evaluate(REQ)).rejects.toBeInstanceOf(KastraProtocolError);
+ }
+});
+it.each([401,429,500,502,503,504])("preserves headerless HTTP failures (%s)",async status=>{
+ const c=new KastraClient("https://fixture.test","token",async()=>new Response("upstream unavailable",{status}));
+ await expect(c.evaluate(REQ)).rejects.toBeInstanceOf(status===401?KastraAuthError:KastraHttpError);
 });

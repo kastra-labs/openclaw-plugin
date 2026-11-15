@@ -2,10 +2,12 @@
 
 Kastra AI governance for [OpenClaw](https://github.com/openclaw/openclaw): a
 `before_tool_call` hook evaluates every tool call against your Kastra tenant
-policies via `POST /v1/evaluate` — **allow**, **block** (DENY), or **hold for
+policies via `POST /v1/hooks/evaluate` — **allow**, **block** (DENY), or **hold for
 human approval**. A HOLD opens an Approve/Deny popover in the Kastra Edge desktop
 app; the hook waits for your decision. This governs OpenClaw the same way Kastra
 governs Claude Code and Codex.
+
+The upcoming plugin uses the dedicated agent-hook route and requires its surface confirmation on decisions. Older plugin versions use `/v1/evaluate` and remain in Direct evaluate scope; upgrade the OpenClaw plugin separately from Kastra Edge. Deploy the matching backend before upgrading the plugin.
 
 The default route remains deterministic evaluation. The optional semantic mode
 below uses registered, device-bound tool argument checks instead.
@@ -104,10 +106,10 @@ second argument submission or classifier reroll.
 This mode sends the exact JSON tool name/arguments within a 64 KiB input
 envelope; larger or lossy inputs are blocked, never clipped. The device's
 registered environment selects policy; the legacy `jurisdiction` and actor
-attributes of `/v1/evaluate` are not caller overrides on this route. HOLD waits
+attributes of `/v1/hooks/evaluate` are not caller overrides on this route. HOLD waits
 are limited to 480 seconds and require timeout DENY. Errors, missing login,
 unsupported versions/budgets, contradictory replies, and unavailable services
-block; there is no fallback to `/v1/evaluate` or `failMode=open`. The plugin owns
+block; there is no fallback to `/v1/hooks/evaluate` or `failMode=open`. The plugin owns
 an abort deadline inside the host budget because a host timeout alone does not
 cancel a hook's promise. Ambiguous dispatch responses are not retried.
 
@@ -142,7 +144,8 @@ the stricter failure and size rules above.
 |---|---|
 | Valid policy ALLOW / DENY | Allow / block, recording decision and rule IDs when supplied |
 | Missing token or invalid configuration | Follow `failMode`; record every unconfigured bypass |
-| Evaluation network, authentication, HTTP 4xx/5xx, or service failure | Follow `failMode`; record `evaluate_error` (a policy DENY on HTTP 403 still blocks) |
+| Evaluation network, authentication, rate-limit or other service failure (except missing routes below) | Follow `failMode`; record `evaluate_error` (a policy DENY on HTTP 403 still blocks) |
+| Missing hook route (404/405/501), or a decision without agent_hook confirmation | Block even in open mode; no legacy-route fallback |
 | Malformed or contradictory decision envelope | Block even in open mode |
 | Unexpected HTTP status or a body Kastra did not write | Follow `failMode`; record `evaluate_error` |
 | Human-approved HOLD | Allow with `hold_approved` |

@@ -7,7 +7,7 @@ import { waitForCheckpoint } from "./hold.js";
 const wire = JSON.parse(readFileSync(new URL("../scripts/fixtures/api-responses.json", import.meta.url), "utf8"));
 const request = { jurisdiction: "us", model: "openclaw" };
 function client(status: number, body: unknown) {
-  return new KastraClient("https://fixture.test", "dh_fixture", async () => new Response(JSON.stringify(body), { status }));
+  return new KastraClient("https://fixture.test", "dh_fixture", async () => new Response(JSON.stringify(body), { status, headers: {"X-Kastra-Evaluation-Surface":"agent_hook"} }));
 }
 
 describe("evaluation wire compatibility", () => {
@@ -54,7 +54,24 @@ describe("evaluation wire compatibility", () => {
 
   for (const surface of ["tool", "message"] as const) {
     for (const failMode of ["open", "closed"] as const) {
-      it.each([400, 401, 403, 404, 408, 422, 429, 500, 503])(`${surface} honors ${failMode} for HTTP %s errors`, async status => {
+      it.each([200, 404, 405, 501])(`${surface} refuses incompatible routing on HTTP %s even with ${failMode}`, async status => {
+        const records: any[] = [];
+        const paths: string[] = [];
+        const deps = {
+          edgeConfigPath: "/nonexistent/fixture.toml", apiPluginConfig: () => ({ deviceToken: "dh_fixture", failMode, governMessages: true }),
+          makeClient: () => new KastraClient("https://fixture.test", "dh_fixture", async url => {
+            paths.push(new URL(String(url)).pathname);
+            return new Response(JSON.stringify(wire.allowWithoutAudit), { status });
+          }),
+          recordOutcome: (outcome: unknown) => { records.push(outcome); }, log: vi.fn(),
+        };
+        const result = surface === "tool" ? await createBeforeToolCallHandler(deps)({ toolName: "exec", params: {} }) :
+          await createMessageSendingHandler(deps)({ content: "Fixture", to: "recipient" }, { channelId: "slack" });
+        expect(result).toMatchObject(surface === "tool" ? { block: true } : { cancel: true });
+        expect(paths).toEqual(["/v1/hooks/evaluate"]);
+        expect(records).toMatchObject([{ decision: "DENY" }]);
+      });
+      it.each([400, 401, 403, 408, 422, 429, 500, 503])(`${surface} honors ${failMode} for HTTP %s errors`, async status => {
         const records: any[] = [];
         const deps = {
           edgeConfigPath: "/nonexistent/fixture.toml", apiPluginConfig: () => ({ deviceToken: "dh_fixture", failMode, governMessages: true }),

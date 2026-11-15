@@ -87,16 +87,18 @@ export class KastraClient {
   }
 
   async evaluate(req: EvaluateRequest, timeoutMs = 3000, signal?: AbortSignal): Promise<Decision> {
-    const res = await this.fetchImpl(this.baseUrl + "/v1/evaluate", {
+    const res = await this.fetchImpl(this.baseUrl + "/v1/hooks/evaluate", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.deviceToken}`, "accept-kastra-hold": "1" },
       body: JSON.stringify(req), signal: requestSignal(timeoutMs, signal),
     });
     if (res.status === 401) throw new KastraAuthError();
+    if ([404, 405, 501].includes(res.status)) throw new KastraProtocolError();
     // Any status the API does not use for a decision is transport noise,
     // including a 2xx or a redirect an intermediary produced.
     if (![200, 202, 403].includes(res.status)) throw new KastraHttpError(res.status);
     const data = await readEnvelope(res);
+    if (res.headers.get("X-Kastra-Evaluation-Surface") !== "agent_hook") throw new KastraProtocolError();
     if (res.status === 202) {
       const on_timeout = timeoutDecision(data.on_timeout);
       if (data.decision !== "HOLD" || !identifier(data.checkpoint_id) || !date(data.expires_at) ||
