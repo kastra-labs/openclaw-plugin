@@ -6,11 +6,15 @@ import { waitForCheckpoint, type HoldWaitOpts } from "./hold.js";
 import { KastraClient, KastraProtocolError } from "./kastra-client.js";
 import { createOutcomeRecorder, type Outcome, type OutcomeRecorder } from "./outcomes.js";
 import type { MessageEvent } from "./host-types.js";
+import { authorizeSemanticTool, type SemanticTransport } from "./semantic.js";
 
 export type BeforeToolCallResult = { block: true; blockReason: string } | undefined;
 export type HandlerDeps = {
   edgeConfigPath?: string;
   makeClient?: (cfg: ResolvedConfig) => Pick<KastraClient, "evaluate" | "getCheckpoint" | "heartbeat" | "cancel">;
+  makeSemanticClient?: (cfg: ResolvedConfig) => SemanticTransport;
+  hostVersion?: () => string | undefined;
+  toolHookCount?: () => number | undefined;
   notifyHold?: typeof defaultNotifyHold;
   clearHold?: typeof defaultClearHold;
   holdWaitOpts?: HoldWaitOpts;
@@ -45,11 +49,11 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
       runId: ctx?.runId ?? event.runId, sessionKey: ctx?.sessionKey,
       channelId: ctx?.channelId, accountId: ctx?.accountId, conversationId: ctx?.conversationId,
     };
-    const finish = async (outcome: Pick<Outcome, "decision" | "disposition"> & Partial<Outcome>, reason: string): Promise<BeforeToolCallResult> => {
+    const finish = async (outcome: Pick<Outcome, "decision" | "disposition"> & Partial<Outcome>, reason: string, enforcementSignal?: AbortSignal): Promise<BeforeToolCallResult> => {
       const remaining = completionDeadline - Date.now();
       const journal = new AbortController();
       const timer = setTimeout(() => journal.abort(), Math.max(1, Math.min(1000, remaining)));
-      const signal = outcome.decision === "ALLOW" && ctx?.abortSignal ? AbortSignal.any([journal.signal, ctx.abortSignal]) : journal.signal;
+      const signal = outcome.decision === "ALLOW" ? AbortSignal.any([journal.signal, ...[ctx?.abortSignal, enforcementSignal].filter((s): s is AbortSignal => !!s)]) : journal.signal;
       try {
         if (remaining <= 0) throw new Error("Hook completion deadline exceeded");
         signal.throwIfAborted();
@@ -66,11 +70,12 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
       return outcome.decision === "DENY" ? { block: true, blockReason: reason } : undefined;
     };
     if (ctx?.abortSignal?.aborted) return finish({ decision: "DENY", disposition: "cancelled" }, "OpenClaw call cancelled");
+    const semantic = hook === "before_tool_call" && pc?.semanticChecks === true;
     const cfg = resolveConfig(pc, deps.edgeConfigPath);
     base.failMode = cfg.failMode;
     if ("error" in cfg) {
       if (!loggedUnconfigured) { log("Kastra is unconfigured; check the device token and local configuration"); loggedUnconfigured = true; }
-      return finish({ decision: cfg.failMode === "closed" ? "DENY" : "ALLOW", disposition: "unconfigured" }, "Kastra is unconfigured and failMode=closed");
+      return finish({ decision: semantic || cfg.failMode === "closed" ? "DENY" : "ALLOW", disposition: "unconfigured" }, "Kastra is unconfigured for this governance mode");
     }
     if (cfg.consoleWarning && !loggedConsoleWarning) { log(cfg.consoleWarning); loggedConsoleWarning = true; }
     const budget = Math.max(1, hostBudget - Math.min(1000, hostBudget / 2));
@@ -80,6 +85,20 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
     const deadline = started + budget;
     let checkpointId: string | undefined;
     try {
+      if (semantic) {
+        const result = await authorizeSemanticTool(cfg, event, {
+          hostVersion: deps.hostVersion?.(), toolHookCount: () => deps.toolHookCount?.(), hostBudget, deadline, signal, makeClient: deps.makeSemanticClient,
+          holdWaitOpts: deps.holdWaitOpts,
+          identified: (operationId, registrationId) => { base.operationId = operationId; base.registrationId = registrationId; },
+          held: env => {
+            checkpointId = env.checkpoint_id;
+            bestEffort(() => (deps.notifyHold ?? defaultNotifyHold)({ checkpoint_id: env.checkpoint_id, title: env.title, source: "openclaw",
+              console_url: cfg.consoleBaseUrl ? `${cfg.consoleBaseUrl}/approvals?checkpoint=${encodeURIComponent(env.checkpoint_id)}` : "", expires_at: env.expires_at }));
+          },
+          clear: id => bestEffort(() => (deps.clearHold ?? defaultClearHold)(id)),
+        });
+        return await finish(result, "Kastra did not authorize this tool invocation", signal);
+      }
       const request = buildEvaluateRequest(event, ctx, cfg);
       const client = (deps.makeClient ?? ((c) => new KastraClient(c.apiBaseUrl, c.deviceToken)))(cfg);
       const decision = await abortable(client.evaluate(request, Math.min(3000, budget), signal), signal);
@@ -125,7 +144,7 @@ function createGate(deps: HandlerDeps, hook: Outcome["hook"]) {
       const disposition = ctx?.abortSignal?.aborted ? "cancelled" : controller.signal.aborted ? "hook_deadline" :
         error instanceof InvalidInputError ? "invalid_input" : error instanceof KastraProtocolError ? "protocol_error" :
           checkpointId ? "hold_error" : "evaluate_error";
-      const allow = disposition === "evaluate_error" && cfg.failMode === "open";
+      const allow = !semantic && disposition === "evaluate_error" && cfg.failMode === "open";
       log(`${disposition}: action ${allow ? "allowed by failMode=open" : "blocked"}`);
       return finish({ decision: allow ? "ALLOW" : "DENY", disposition, checkpointId }, `Kastra could not authorize this action (failMode=${cfg.failMode})`);
     } finally {

@@ -7,6 +7,9 @@ human approval**. A HOLD opens an Approve/Deny popover in the Kastra Edge deskto
 app; the hook waits for your decision. This governs OpenClaw the same way Kastra
 governs Claude Code and Codex.
 
+The default route remains deterministic evaluation. The optional semantic mode
+below uses registered, device-bound tool argument checks instead.
+
 Example: a HOLD rule on `tool=exec`, command `^gog gmail send`, with timeout
 DENY requires approval before sending. A rule with timeout ALLOW may also release
 the call after the server confirms expiry; that outcome is recorded separately.
@@ -60,6 +63,7 @@ in `~/.openclaw/openclaw.json`:
 | `jurisdiction` | `us-east` (or TOML `default_jurisdiction`) | policy jurisdiction |
 | `failMode` | `open` | `closed` blocks tools and enabled message governance when unconfigured or evaluation is unavailable |
 | `governMessages` | `false` | also evaluate outbound chat replies (latency cost) |
+| `semanticChecks` | `false` | opt in to registered semantic tool argument checks; requires the host/configuration contract below |
 | `holdMaxWaitMs` | `540000` | max in-hook wait for approval (clamped ≤ 540 s) |
 
 Nonempty host `api.pluginConfig` is authoritative. Legacy callers may supply
@@ -68,6 +72,50 @@ Message governance reads that same configuration snapshot once per invocation.
 
 Note: keep OpenClaw's own exec-approvals on `allowlist`/`full` for commands you
 govern through Kastra, or you'll be prompted twice for the same action.
+
+## Semantic tool argument checks
+
+This opt-in requires **OpenClaw 2026.9.2**, an enabled semantic-capable Kastra
+backend, `failMode: "closed"`, and an effective `before_tool_call` timeout of
+600000 ms. It uses the existing device login and selected environment:
+
+```json
+{ "semanticChecks": true, "failMode": "closed" }
+```
+
+Kastra must be the **only registered `before_tool_call` handler**. The host
+gives each handler an isolated original argument object and merges parameter
+changes afterward; moving Kastra later in the priority order would not expose
+those changes. Semantic mode checks the public host registry at entry and before
+dispatch and blocks if another handler is present, even when that handler would
+only observe calls or match a different tool. Native plugins that register tools
+without a `before_tool_call` handler remain compatible.
+
+The plugin registers the pinned host contract through
+`POST /v1/semantic/registrations`, then uses `POST /v1/semantic/check-event` for
+check, approval resume, and dispatch. One UUIDv7 `X-Kastra-Operation-Id` binds all
+stages of the invocation. A check returning ALLOW means prepared; the native
+tool runs only after the separate dispatch response is ALLOW/dispatched and the
+local outcome is durably recorded. A human-approved checkpoint is rechecked
+through resume and dispatch using the same registration and operation, with no
+second argument submission or classifier reroll.
+
+This mode sends the exact JSON tool name/arguments within a 64 KiB input
+envelope; larger or lossy inputs are blocked, never clipped. The device's
+registered environment selects policy; the legacy `jurisdiction` and actor
+attributes of `/v1/evaluate` are not caller overrides on this route. HOLD waits
+are limited to 480 seconds and require timeout DENY. Errors, missing login,
+unsupported versions/budgets, contradictory replies, and unavailable services
+block; there is no fallback to `/v1/evaluate` or `failMode=open`. The plugin owns
+an abort deadline inside the host budget because a host timeout alone does not
+cancel a hook's promise. Ambiguous dispatch responses are not retried.
+
+The journal records `operationId` and `registrationId` for this mode. It does
+not restart an interrupted host invocation or prove that an authorized tool
+executed. Semantic tool arguments do **not** cover tool results, final agent
+answers, `message_sending`, provider-executed tools, or a disabled/unloaded
+plugin. The native host and tool implementations remain trusted. Use a governed
+MCP result path when result delivery also requires a semantic check.
 
 ## Known limitation
 
@@ -85,6 +133,9 @@ not confirmation that startup plugins are ready. Validate plugin loading and a
 known DENY policy before admitting governed traffic.
 
 ## Failure Behavior
+
+The table below describes the default deterministic route. Semantic mode uses
+the stricter failure and size rules above.
 
 | Outcome | Behavior |
 |---|---|
@@ -198,6 +249,10 @@ the tarball into a fresh temporary directory, and exercises:
   than the host's default 15 seconds.
 - Concurrent journal writers, rotation, and automatic recovery after killing a
   fixture lock owner with SIGKILL.
+- On the pinned semantic host, registered check/dispatch and approved/denied/
+  expired/pending HOLD flows through the real `/tools/invoke` boundary;
+  contradictory responses, outages, conflicting parameter-rewrite hooks, and
+  the host's thrown-error/timeout failure behavior.
 
 The suite isolates home/config/state, does not inherit service credentials,
 and stops the gateway and removes temporary state on completion.
@@ -207,6 +262,8 @@ It tests the packaged artifact, not an injected replacement client.
 `npm run smoke` and `node scripts/smoke.mjs` run the same no-login suite.
 CI tests OpenClaw **2026.6.6** and **2026.9.2**; an alternate installed host can
 be tested with `npm run test:integration -- /path/to/openclaw`.
+Semantic qualification runs only on **2026.9.2**; the older host remains a
+deterministic-route compatibility target.
 These tests verify plugin/host contracts, not the real Kastra evaluator, approval
 UI, or provider-side execution.
 
