@@ -38,11 +38,11 @@ export function semanticAPI() {
       }
       const data = { contract_version: version, registration_id: registration,
         operation_id: scenario === "wrong-operation" ? checkpoint : req.headers["x-kastra-operation-id"], stage: body.stage,
-        decision: scenario === "deny" ? "DENY" : "ALLOW", status: scenario === "deny" ? "denied" : body.stage === "dispatch" ? "dispatched" : "prepared" };
+        decision: scenario === "deny" ? "DENY" : body.stage === "dispatch" ? "ALLOW" : undefined, status: scenario === "deny" ? "denied" : body.stage === "dispatch" ? "dispatched" : "prepared" };
       if (scenario.startsWith("hold") && body.stage === "check") return send(202, { ...data, decision: "HOLD", status: "held", checkpoint_id: checkpoint,
         hold: { decision: "HOLD", checkpoint_id: checkpoint, title: "Synthetic review", on_timeout: "deny",
           server_now: new Date().toISOString(), expires_at: new Date(Date.now() + 60000).toISOString() } });
-      return send(scenario === "deny" || scenario === "contradictory" ? 403 : 200, data);
+      return send(scenario === "deny" || scenario === "contradictory" ? 403 : body.stage === "dispatch" ? 200 : 202, data);
     }
     assert.ok(req.url.startsWith(`/v1/checkpoints/${checkpoint}`), `unexpected route ${req.url}`);
     if (req.method !== "GET") return send(200, {});

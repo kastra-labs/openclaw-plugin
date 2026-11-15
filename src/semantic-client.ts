@@ -16,7 +16,7 @@ const contractHash = createHash("sha256").update(JSON.stringify(SEMANTIC_CONTRAC
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export type Registration = { id: string; maxContentBytes: number };
 export type SemanticStage = "check" | "resume" | "dispatch";
-export type SemanticReply = { decision: "ALLOW" | "DENY" | "HOLD"; status: string; hold?: HoldEnvelope };
+export type SemanticReply = { decision?: "ALLOW" | "DENY" | "HOLD"; status: string; hold?: HoldEnvelope };
 
 export function newOperationId(): string {
   const bytes = randomBytes(16);
@@ -103,8 +103,10 @@ export class SemanticClient extends KastraClient {
     }, signal, operationId);
     if (data.contract_version !== SEMANTIC_VERSION || data.registration_id !== registration.id ||
         data.operation_id !== operationId || data.stage !== stage || data.result !== undefined || data.result_hash !== undefined) throw new KastraProtocolError();
-    if (status === 200 && data.decision === "ALLOW" && data.status === (stage === "dispatch" ? "dispatched" : "prepared") &&
-        data.hold === undefined && data.checkpoint_id === undefined) return { decision: "ALLOW", status: stage === "dispatch" ? "dispatched" : "prepared" };
+    if (status === 202 && stage !== "dispatch" && data.status === "prepared" && data.decision === undefined &&
+        data.hold === undefined && data.checkpoint_id === undefined) return { status: "prepared" };
+    if (status === 200 && stage === "dispatch" && data.decision === "ALLOW" && data.status === "dispatched" &&
+        data.hold === undefined && data.checkpoint_id === undefined) return { decision: "ALLOW", status: "dispatched" };
     if (status === 403 && data.decision === "DENY" && (data.status === "denied" || data.status === "unknown") && data.hold === undefined) {
       return { decision: "DENY", status: data.status };
     }

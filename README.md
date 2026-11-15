@@ -94,8 +94,9 @@ without a `before_tool_call` handler remain compatible.
 The plugin registers the pinned host contract through
 `POST /v1/semantic/registrations`, then uses `POST /v1/semantic/check-event` for
 check, approval resume, and dispatch. One UUIDv7 `X-Kastra-Operation-Id` binds all
-stages of the invocation. A check returning ALLOW means prepared; the native
-tool runs only after the separate dispatch response is ALLOW/dispatched and the
+stages of the invocation. A prepared check returns HTTP 202 without an ALLOW
+decision; the native tool runs only after the separate HTTP 200 dispatch response
+is ALLOW/dispatched and the
 local outcome is durably recorded. A human-approved checkpoint is rechecked
 through resume and dispatch using the same registration and operation, with no
 second argument submission or classifier reroll.

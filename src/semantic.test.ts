@@ -7,7 +7,7 @@ import type { Outcome } from "./outcomes.js";
 const registration = "018ff020-1234-7123-8123-123456789abc";
 const checkpoint = "018ff020-1234-7123-8123-123456789abd";
 const event = { toolName: "exec", params: { command: "echo synthetic", text: "é<>&" } };
-const ok = (data: unknown, status = 200) => new Response(JSON.stringify({ success: true, data }), { status });
+const ok = (data: unknown, status = (data as { status?: string })?.status === "prepared" ? 202 : 200) => new Response(JSON.stringify({ success: true, data }), { status });
 function registrationData() {
   return { contract_version: SEMANTIC_VERSION, registration_id: registration, environment: "dev", revision: 1,
     contract_hash: createHash("sha256").update(JSON.stringify(SEMANTIC_CONTRACT)).digest("hex"), max_content_bytes: 65536, max_transport_bytes: 1048576 };
@@ -27,7 +27,7 @@ function fixture(options: {
     if (path.endsWith("check-event")) return options.respond?.(body, init) ?? ok({
       contract_version: SEMANTIC_VERSION, registration_id: registration,
       operation_id: new Headers(init.headers).get("X-Kastra-Operation-Id"), stage: body.stage,
-      decision: "ALLOW", status: body.stage === "dispatch" ? "dispatched" : "prepared",
+      decision: body.stage === "dispatch" ? "ALLOW" : undefined, status: body.stage === "dispatch" ? "dispatched" : "prepared",
     });
     if (init.method === "POST") return new Response(null, { status: 204 });
     const state = options.state ?? "approved";
@@ -43,7 +43,7 @@ function fixture(options: {
   };
   return { handler: createBeforeToolCallHandler(deps), deps, requests, records, legacy };
 }
-function reply(body: any, init: RequestInit, decision = "ALLOW", status = body.stage === "dispatch" ? "dispatched" : "prepared") {
+function reply(body: any, init: RequestInit, decision: string | undefined = body.stage === "dispatch" ? "ALLOW" : undefined, status = body.stage === "dispatch" ? "dispatched" : "prepared") {
   return { contract_version: SEMANTIC_VERSION, registration_id: registration, operation_id: new Headers(init.headers).get("X-Kastra-Operation-Id"),
     stage: body.stage, decision, status };
 }
@@ -102,13 +102,14 @@ describe("registered OpenClaw semantic enforcement", () => {
     expect(await f.handler(event)).toMatchObject({ block: true });
     expect(f.requests).toEqual([]); expect(f.legacy).not.toHaveBeenCalled();
   });
-  it.each(["wrong-op", "wrong-registration", "wrong-stage", "403-allow", "200-deny", "released", "prepared-dispatch", "timeout-allow", "oversized-hold"])("rejects contradictory wire authority: %s", async fault => {
+  it.each(["wrong-op", "wrong-registration", "wrong-stage", "403-allow", "200-deny", "legacy-prepared-allow", "prepared-allow", "released", "prepared-dispatch", "timeout-allow", "oversized-hold"])("rejects contradictory wire authority: %s", async fault => {
     const f = fixture({ respond: (b, i) => {
       const data: any = reply(b, i);
       if (fault === "wrong-op") data.operation_id = newOperationId();
       if (fault === "wrong-registration") data.registration_id = checkpoint;
       if (fault === "wrong-stage") data.stage = "complete";
       if (fault === "200-deny") data.decision = "DENY";
+      if (fault === "legacy-prepared-allow" || fault === "prepared-allow") data.decision = "ALLOW";
       if (fault === "released") data.status = "released";
       if (fault === "prepared-dispatch") data.status = "prepared";
       if (fault === "timeout-allow" || fault === "oversized-hold") {
@@ -117,7 +118,7 @@ describe("registered OpenClaw semantic enforcement", () => {
         else hold.hold.expires_at = new Date(Date.now() + 600000).toISOString();
         return ok(hold, 202);
       }
-      return ok(data, fault === "403-allow" ? 403 : 200);
+      return ok(data, fault === "403-allow" ? 403 : fault === "legacy-prepared-allow" || fault === "200-deny" ? 200 : data.status === "prepared" ? 202 : 200);
     } });
     expect(await f.handler(event)).toMatchObject({ block: true });
     expect(f.records[0]).toMatchObject({ decision: "DENY", disposition: "protocol_error" });
