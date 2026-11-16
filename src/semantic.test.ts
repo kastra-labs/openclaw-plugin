@@ -147,11 +147,19 @@ describe("registered OpenClaw semantic enforcement", () => {
     expect(f.requests.some(r => r.body?.stage === "dispatch")).toBe(false);
   });
   it("rejects oversized or lossy input before any registration and never clips", async () => {
-    for (const params of [{ value: "é".repeat(33000) }, { get value() { throw new Error("not invoked"); } }, { n: Infinity }, { value: "\uD800" }, { "\uDC00": "key" }]) {
+    for (const params of [{ value: "é".repeat(530000) }, { get value() { throw new Error("not invoked"); } }, { n: Infinity }, { value: "\uD800" }, { "\uDC00": "key" }]) {
       const f = fixture();
       expect(await f.handler({ toolName: "exec", params })).toMatchObject({ block: true });
       expect(f.records[0].disposition).toBe("invalid_input"); expect(f.requests).toEqual([]);
     }
+  });
+  it("submits untruncated content above the classifier limit for the server's on_error policy", async () => {
+    const f = fixture({ respond: (b, i) => ok(reply(b, i, "DENY", "denied"), 403) });
+    const params = { text: "x".repeat(70 * 1024) };
+    expect(await f.handler({ toolName: "exec", params })).toMatchObject({ block: true });
+    expect(f.requests[1].body.arguments).toEqual(params);
+    expect(f.records[0].disposition).toBe("policy_deny");
+    expect(f.requests.some(r => r.body?.stage === "dispatch")).toBe(false);
   });
   it("preserves well-formed Unicode argument content", async () => {
     const f = fixture();

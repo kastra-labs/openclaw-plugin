@@ -6,7 +6,7 @@ import type { HoldEnvelope } from "./types.js";
 export const SEMANTIC_VERSION = "semantic-event-v1";
 export const SEMANTIC_HOST_VERSION = "2026.9.2";
 export const SEMANTIC_CONTENT_BYTES = 64 * 1024;
-const TRANSPORT_BYTES = 1024 * 1024;
+export const SEMANTIC_TRANSPORT_BYTES = 1024 * 1024;
 // Sorted keys match the backend's canonical JSON contract hash.
 export const SEMANTIC_CONTRACT = Object.freeze({
   complete_content: true, failure_mode: "block", host: "openclaw", host_version: SEMANTIC_HOST_VERSION,
@@ -47,7 +47,7 @@ function boundedFetch(fetchImpl: typeof fetch): typeof fetch {
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > TRANSPORT_BYTES) throw new KastraProtocolError();
+        if (size > SEMANTIC_TRANSPORT_BYTES) throw new KastraProtocolError();
         chunks.push(value);
       }
     } finally { await reader.cancel().catch(() => {}); }
@@ -67,10 +67,12 @@ export class SemanticClient extends KastraClient {
 
   private async request(path: string, body: unknown, signal: AbortSignal, operationId?: string): Promise<{ status: number; data: Record<string, unknown> }> {
     signal.throwIfAborted();
+    const encoded = JSON.stringify(body);
+    if (Buffer.byteLength(encoded) > SEMANTIC_TRANSPORT_BYTES) throw new KastraProtocolError();
     const response = await this.semanticFetch(this.semanticBase + path, {
       method: "POST", redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
       headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json",
-        ...(operationId ? { "X-Kastra-Operation-Id": operationId } : {}) }, body: JSON.stringify(body),
+        ...(operationId ? { "X-Kastra-Operation-Id": operationId } : {}) }, body: encoded,
     });
     signal.throwIfAborted();
     if (response.status === 401) throw new KastraAuthError();
@@ -91,7 +93,7 @@ export class SemanticClient extends KastraClient {
         typeof data.environment !== "string" || !data.environment || (environment && data.environment !== environment) ||
         !Number.isSafeInteger(data.revision) || (data.revision as number) < 1 || data.contract_hash !== contractHash ||
         !Number.isSafeInteger(data.max_content_bytes) || (data.max_content_bytes as number) < 1 || (data.max_content_bytes as number) > SEMANTIC_CONTENT_BYTES ||
-        data.max_transport_bytes !== TRANSPORT_BYTES) throw new KastraProtocolError();
+        data.max_transport_bytes !== SEMANTIC_TRANSPORT_BYTES) throw new KastraProtocolError();
     return { id: data.registration_id, maxContentBytes: data.max_content_bytes as number };
   }
 

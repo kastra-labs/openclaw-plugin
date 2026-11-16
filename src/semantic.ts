@@ -4,7 +4,7 @@ import type { ResolvedConfig } from "./config.js";
 import { waitForCheckpoint, type HoldWaitOpts } from "./hold.js";
 import { KastraProtocolError } from "./kastra-client.js";
 import type { Outcome } from "./outcomes.js";
-import { SEMANTIC_CONTENT_BYTES, SEMANTIC_HOST_VERSION, SemanticClient, newOperationId } from "./semantic-client.js";
+import { SEMANTIC_TRANSPORT_BYTES, SEMANTIC_HOST_VERSION, SemanticClient, newOperationId } from "./semantic-client.js";
 import type { HoldEnvelope } from "./types.js";
 
 export type SemanticTransport = Pick<SemanticClient, "register" | "event" | "getCheckpoint" | "heartbeat" | "cancel">;
@@ -35,13 +35,12 @@ export async function authorizeSemanticTool(cfg: ResolvedConfig, event: HookEven
     if (/[\uD800-\uDFFF]/u.test(key) || (typeof value === "string" && /[\uD800-\uDFFF]/u.test(value))) throw new InvalidInputError();
     return value;
   }));
-  if (inputBytes > SEMANTIC_CONTENT_BYTES) throw new InvalidInputError();
+  if (inputBytes > SEMANTIC_TRANSPORT_BYTES) throw new InvalidInputError();
   const operationId = newOperationId();
   opts.identified(operationId);
   const client = (opts.makeClient ?? (c => new SemanticClient(c.apiBaseUrl, c.deviceToken)))(cfg);
   const registration = await abortable(client.register(cfg.environment, opts.signal), opts.signal);
   opts.signal.throwIfAborted();
-  if (inputBytes > registration.maxContentBytes) throw new InvalidInputError();
   opts.identified(operationId, registration.id);
   let reply = await abortable(client.event(registration, operationId, "check", event.toolName, args, opts.signal), opts.signal);
   let approval: Partial<Outcome> = {};
