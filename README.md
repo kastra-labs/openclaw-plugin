@@ -105,8 +105,8 @@ second argument submission or classifier reroll.
 
 This mode sends the exact JSON tool name/arguments within a 1 MiB transport
 envelope. The classifier accepts up to 64 KiB of normalized input; beyond that,
-the server records the matching rule’s `on_error` outcome without a classifier
-call. With no matching semantic rule, deterministic policy still applies and
+a matching semantic check requires the server to block the tool call, including
+in shadow mode. It records the denial without calling the classifier. With no matching semantic rule, deterministic policy still applies and
 the server reports `semantic_status: not_applicable`. Oversized transport or
 lossy inputs are blocked, never clipped. In shadow mode, checks record what
 would happen without blocking; dispatch still requires server authorization. The device's

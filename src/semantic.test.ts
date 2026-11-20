@@ -153,7 +153,7 @@ describe("registered OpenClaw semantic enforcement", () => {
       expect(f.records[0].disposition).toBe("invalid_input"); expect(f.requests).toEqual([]);
     }
   });
-  it("submits untruncated content above the classifier limit for the server's on_error policy", async () => {
+  it("blocks the tool when the server refuses complete arguments above its classifier limit", async () => {
     const f = fixture({ respond: (b, i) => ok(reply(b, i, "DENY", "denied"), 403) });
     const params = { text: "x".repeat(70 * 1024) };
     expect(await f.handler({ toolName: "exec", params })).toMatchObject({ block: true });
