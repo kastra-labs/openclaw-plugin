@@ -103,13 +103,15 @@ local outcome is durably recorded. A human-approved checkpoint is rechecked
 through resume and dispatch using the same registration and operation, with no
 second argument submission or classifier reroll.
 
-This mode sends the exact JSON tool name/arguments within a 1 MiB transport
-envelope. The classifier accepts up to 64 KiB of normalized input; beyond that,
-a matching semantic check requires the server to block the tool call, including
-in shadow mode. It records the denial without calling the classifier. With no matching semantic rule, deterministic policy still applies and
-the server reports `semantic_status: not_applicable`. Oversized transport or
-lossy inputs are blocked, never clipped. In shadow mode, checks record what
-would happen without blocking; dispatch still requires server authorization. The device's
+This mode sends the complete tool name and arguments in a 1 MiB transport
+envelope. With no matching semantic rule, the server reports
+`semantic_status: not_applicable` and deterministic policy still applies.
+
+In shadow mode, semantic verdicts are recorded and the tool call can proceed.
+There is one size exception: if a semantic rule matches and the normalized
+input exceeds 64 KiB, the server records a denial and blocks the call without
+calling the classifier. Transport and authorization checks still apply in every
+mode. Oversized transport or lossy input is refused before dispatch. The device's
 registered environment selects policy; the legacy `jurisdiction` and actor
 attributes of `/v1/hooks/evaluate` are not caller overrides on this route. HOLD waits
 are limited to 480 seconds and require timeout DENY. Errors, missing login,
