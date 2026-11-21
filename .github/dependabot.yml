@@ -4,7 +4,7 @@ updates:
     directory: /.github/openclaw-host
     schedule:
       interval: cron
-      cronjob: "23 */6 * * *"
+      cronjob: "23 9 * * *"
     allow:
       - dependency-name: openclaw
     commit-message:

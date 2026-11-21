@@ -281,7 +281,7 @@ be tested with `npm run test:integration -- /path/to/openclaw`.
 Semantic qualification runs on **2026.9.2** and **2026.11.6**; 2026.6.6 remains a
 deterministic-route compatibility target.
 
-Dependabot checks the upstream OpenClaw package every six hours and opens a
+Dependabot checks the upstream OpenClaw package daily and opens a
 compatibility PR when a newer stable version is available. Its test-only manifest
 is separate from the plugin SDK dependency. PR CI runs the packed plugin on
 each stable release between the previous and proposed versions. Reviewers use
