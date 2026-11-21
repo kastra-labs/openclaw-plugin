@@ -77,7 +77,7 @@ govern through Kastra, or you'll be prompted twice for the same action.
 
 ## Semantic tool argument checks
 
-This opt-in requires **OpenClaw 2026.9.2**, an enabled semantic-capable Kastra
+This opt-in requires **OpenClaw 2026.9.2 or 2026.11.6**, an enabled semantic-capable Kastra
 backend, `failMode: "closed"`, and an effective `before_tool_call` timeout of
 600000 ms. It uses the existing device login and selected environment:
 
@@ -271,16 +271,16 @@ Dependency installation may access the public npm registry on a cold cache;
 the gateway and policy fixtures do not require a live service.
 It tests the packaged artifact, not an injected replacement client.
 `npm run smoke` and `node scripts/smoke.mjs` run the same no-login suite.
-CI tests OpenClaw **2026.6.6** and **2026.9.2**; an alternate installed host can
+CI tests OpenClaw **2026.6.6**, **2026.9.2**, and **2026.11.6**; an alternate installed host can
 be tested with `npm run test:integration -- /path/to/openclaw`.
-Semantic qualification runs only on **2026.9.2**; the older host remains a
+Semantic qualification runs on **2026.9.2** and **2026.11.6**; 2026.6.6 remains a
 deterministic-route compatibility target.
 These tests verify plugin/host contracts, not the real Kastra evaluator, approval
 UI, or provider-side execution.
 
 ## Version & Release
 
-**v0.3.0** is the source version. See [CHANGELOG.md](./CHANGELOG.md) for migration
+**v0.3.1** is the source version. See [CHANGELOG.md](./CHANGELOG.md) for migration
 notes and [npm](https://www.npmjs.com/package/@kastra_labs/openclaw) for the
 published version. Source changes do not update existing installations.
 The Verified release artifact workflow builds, tests, inspects the packed

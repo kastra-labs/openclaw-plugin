@@ -33,7 +33,7 @@ try {
   mkdirSync(env.HOME);
   mkdirSync(env.OPENCLAW_STATE_DIR);
   const runs = [["test-journal.mjs"], ["test-runtime.mjs"], ["test-gateway.mjs"], ["test-gateway.mjs"]];
-  if (JSON.parse(readFileSync(join(host, "package.json"))).version === "2026.9.2") {
+  if (["2026.9.2", "2026.11.6"].includes(JSON.parse(readFileSync(join(host, "package.json"))).version)) {
     for (const mode of ["semantic", "semantic-rewrite", "semantic-throw", "semantic-timeout"]) runs.push(["test-gateway.mjs", mode]);
   }
   for (const [index, [script, mode]] of runs.entries()) {

@@ -4,8 +4,10 @@ import type { ResolvedConfig } from "./config.js";
 import { waitForCheckpoint, type HoldWaitOpts } from "./hold.js";
 import { KastraProtocolError } from "./kastra-client.js";
 import type { Outcome } from "./outcomes.js";
-import { SEMANTIC_TRANSPORT_BYTES, SEMANTIC_HOST_VERSION, SemanticClient, newOperationId } from "./semantic-client.js";
+import { SEMANTIC_TRANSPORT_BYTES, SemanticClient, newOperationId } from "./semantic-client.js";
 import type { HoldEnvelope } from "./types.js";
+
+const qualifiedHostVersions = ["2026.9.2", "2026.11.6"];
 
 export type SemanticTransport = Pick<SemanticClient, "register" | "event" | "getCheckpoint" | "heartbeat" | "cancel">;
 export type SemanticOptions = {
@@ -19,11 +21,13 @@ export type SemanticOptions = {
 };
 
 export async function authorizeSemanticTool(cfg: ResolvedConfig, event: HookEvent, opts: SemanticOptions): Promise<Partial<Outcome> & Pick<Outcome, "decision" | "disposition">> {
+  const hostVersion = opts.hostVersion;
+  if (!hostVersion || !qualifiedHostVersions.includes(hostVersion)) throw new KastraProtocolError();
   const assertHost = () => {
     opts.signal.throwIfAborted();
     // The pinned host isolates each handler's original event; priority alone
     // cannot expose another plugin's returned params. Require a sole gate.
-    if (cfg.failMode !== "closed" || opts.hostVersion !== SEMANTIC_HOST_VERSION || opts.hostBudget !== 600000 || opts.toolHookCount() !== 1) throw new KastraProtocolError();
+    if (cfg.failMode !== "closed" || opts.hostBudget !== 600000 || opts.toolHookCount() !== 1) throw new KastraProtocolError();
   };
   assertHost();
   if (typeof event.toolName !== "string" || !event.toolName.trim() || event.toolName.length > 256 || /[\x00-\x1f\x7f\uD800-\uDFFF]/u.test(event.toolName)) throw new InvalidInputError();
@@ -39,7 +43,7 @@ export async function authorizeSemanticTool(cfg: ResolvedConfig, event: HookEven
   const operationId = newOperationId();
   opts.identified(operationId);
   const client = (opts.makeClient ?? (c => new SemanticClient(c.apiBaseUrl, c.deviceToken)))(cfg);
-  const registration = await abortable(client.register(cfg.environment, opts.signal), opts.signal);
+  const registration = await abortable(client.register(cfg.environment, hostVersion, opts.signal), opts.signal);
   opts.signal.throwIfAborted();
   opts.identified(operationId, registration.id);
   let reply = await abortable(client.event(registration, operationId, "check", event.toolName, args, opts.signal), opts.signal);

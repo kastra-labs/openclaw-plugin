@@ -1,16 +1,16 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBeforeToolCallHandler, createMessageSendingHandler, type HandlerDeps } from "./handler.js";
-import { SEMANTIC_CONTRACT, SEMANTIC_HOST_VERSION, SEMANTIC_VERSION, SemanticClient, newOperationId } from "./semantic-client.js";
+import { SEMANTIC_VERSION, SemanticClient, newOperationId } from "./semantic-client.js";
 import type { Outcome } from "./outcomes.js";
 
 const registration = "018ff020-1234-7123-8123-123456789abc";
 const checkpoint = "018ff020-1234-7123-8123-123456789abd";
 const event = { toolName: "exec", params: { command: "echo synthetic", text: "é<>&" } };
 const ok = (data: unknown, status = (data as { status?: string })?.status === "prepared" ? 202 : 200) => new Response(JSON.stringify({ success: true, data }), { status });
-function registrationData() {
+function registrationData(contract: unknown) {
   return { contract_version: SEMANTIC_VERSION, registration_id: registration, environment: "dev", revision: 1,
-    contract_hash: createHash("sha256").update(JSON.stringify(SEMANTIC_CONTRACT)).digest("hex"), max_content_bytes: 65536, max_transport_bytes: 1048576 };
+    contract_hash: createHash("sha256").update(JSON.stringify(contract)).digest("hex"), max_content_bytes: 65536, max_transport_bytes: 1048576 };
 }
 function fixture(options: {
   respond?: (body: any, init: RequestInit) => Response | Promise<Response>;
@@ -23,7 +23,7 @@ function fixture(options: {
     const path = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     requests.push({ path, body, init });
-    if (path.endsWith("registrations")) return ok({ ...registrationData(), ...options.registration });
+    if (path.endsWith("registrations")) return ok({ ...registrationData(body.contract), ...options.registration });
     if (path.endsWith("check-event")) return options.respond?.(body, init) ?? ok({
       contract_version: SEMANTIC_VERSION, registration_id: registration,
       operation_id: new Headers(init.headers).get("X-Kastra-Operation-Id"), stage: body.stage,
@@ -35,7 +35,7 @@ function fixture(options: {
       title: "Synthetic approval", expires_at: new Date(Date.now() + 10000).toISOString(), on_timeout: "DENY" });
   };
   const deps: HandlerDeps = {
-    edgeConfigPath: "/nonexistent/semantic-fixture.toml", hostVersion: () => SEMANTIC_HOST_VERSION, toolHookCount: () => 1,
+    edgeConfigPath: "/nonexistent/semantic-fixture.toml", hostVersion: () => "2026.9.2", toolHookCount: () => 1,
     apiPluginConfig: () => ({ semanticChecks: true, failMode: "closed", deviceToken: "dh_synthetic", environment: "dev", ...options.config }),
     makeClient: legacy, makeSemanticClient: () => new SemanticClient("http://127.0.0.1:1", "dh_synthetic", fetcher),
     recordOutcome: record => { records.push(record); }, log: vi.fn(), notifyHold: async () => {}, clearHold: async () => {},
@@ -54,11 +54,11 @@ function held(body: any, init: RequestInit) {
 afterEach(() => vi.useRealTimers());
 
 describe("registered OpenClaw semantic enforcement", () => {
-  it("authorizes exact arguments, then dispatches the same operation before the durable local ALLOW", async () => {
-    const f = fixture();
+  it.each(["2026.9.2", "2026.11.6"])("authorizes exact arguments and registers the installed host %s", async hostVersion => {
+    const f = fixture({ deps: { hostVersion: () => hostVersion } });
     expect(await f.handler(event)).toBeUndefined();
     expect(f.requests.map(r => r.body?.stage ?? "register")).toEqual(["register", "check", "dispatch"]);
-    expect(f.requests[0].body.contract).toEqual(SEMANTIC_CONTRACT);
+    expect(f.requests[0].body.contract.host_version).toBe(hostVersion);
     expect(f.requests[1].body.arguments).toEqual(event.params);
     expect(f.requests[2].body.arguments).toBeUndefined();
     const operations = f.requests.slice(1).map(r => new Headers(r.init.headers).get("X-Kastra-Operation-Id"));
@@ -91,6 +91,8 @@ describe("registered OpenClaw semantic enforcement", () => {
   });
   it.each([
     ["unsupported host", { hostVersion: () => "2026.6.6" }, {}],
+    ["next patch", { hostVersion: () => "2026.11.7" }, {}],
+    ["prerelease", { hostVersion: () => "2026.11.6-rc.1" }, {}],
     ["missing host", { hostVersion: () => undefined }, {}],
     ["conflicting tool hook", { toolHookCount: () => 2 }, {}],
     ["missing registry", { toolHookCount: () => undefined }, {}],

@@ -13,7 +13,7 @@ writeFileSync(process.env.OPENCLAW_CONFIG_PATH, "{}\n");
 // never silently substitute a fake runner or skip the compatibility checks.
 async function hostFunction(prefix, name) {
   for (const file of readdirSync(join(host, "dist"))) {
-    if (!file.startsWith(prefix) || !file.endsWith(".js")) continue;
+    if (!file.startsWith(prefix) || !/\.m?js$/.test(file)) continue;
     if (!readFileSync(join(host, "dist", file), "utf8").includes(`function ${name}(`)) continue;
     const module = await import(pathToFileURL(join(host, "dist", file)).href);
     const fn = Object.values(module).find(value => typeof value === "function" && value.name === name);
@@ -22,7 +22,7 @@ async function hostFunction(prefix, name) {
   throw new Error(`OpenClaw ${version}: update adapter for ${name}`);
 }
 const loadPlugins = await hostFunction("loader-", "loadOpenClawPlugins");
-const wrapTool = await hostFunction("agent-tools.before-tool-call-", "wrapToolWithBeforeToolCallHook");
+const wrapTool = await hostFunction("agent-tools.before-tool-call", "wrapToolWithBeforeToolCallHook");
 const { getGlobalHookRunner } = await import(pathToFileURL(join(host, "dist/plugin-sdk/plugin-runtime.js")).href);
 let scenario;
 let requests = [];

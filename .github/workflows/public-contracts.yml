@@ -22,12 +22,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        openclaw: ["2026.6.6", "2026.9.2"]
+        openclaw: ["2026.6.6", "2026.9.2", "2026.11.6"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.openclaw == '2026.11.6' && '24' || '22' }}
           cache: npm
       - run: npm ci
       - run: npm install --prefix "$RUNNER_TEMP/openclaw-host" --ignore-scripts --no-audit --no-fund "openclaw@${{ matrix.openclaw }}"

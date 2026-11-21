@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Support semantic tool checks on OpenClaw 2026.11.6 and report the installed host version when registering. The backend must accept that version.
+
 ## 0.3.0
 
 - Add default-off `semanticChecks` for device-registered tool argument checks on
