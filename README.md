@@ -7,7 +7,7 @@ human approval**. A HOLD opens an Approve/Deny popover in the Kastra Edge deskto
 app; the hook waits for your decision. This governs OpenClaw the same way Kastra
 governs Claude Code and Codex.
 
-The upcoming plugin uses the dedicated agent-hook route and requires its surface confirmation on decisions. Older plugin versions use `/v1/evaluate` and remain in Direct evaluate scope; upgrade the OpenClaw plugin separately from Kastra Edge. Deploy the matching backend before upgrading the plugin.
+Version 0.3.0 uses the dedicated agent-hook route and requires its surface confirmation on decisions. Older plugin versions use `/v1/evaluate` and remain in Direct evaluate scope; upgrade the OpenClaw plugin separately from Kastra Edge. Deploy the matching backend before upgrading the plugin.
 
 The default route remains deterministic evaluation. The optional semantic mode
 below uses registered, device-bound tool argument checks instead.
@@ -280,7 +280,7 @@ UI, or provider-side execution.
 
 ## Version & Release
 
-**v0.2.0** is the source version. See [CHANGELOG.md](./CHANGELOG.md) for migration
+**v0.3.0** is the source version. See [CHANGELOG.md](./CHANGELOG.md) for migration
 notes and [npm](https://www.npmjs.com/package/@kastra_labs/openclaw) for the
 published version. Source changes do not update existing installations.
 The Verified release artifact workflow builds, tests, inspects the packed
