@@ -3,7 +3,7 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  contracts:
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,19 +16,51 @@ jobs:
       - run: npm run check
       - run: npm run build
       - run: npm audit --omit=dev
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      hosts: ${{ steps.select.outputs.hosts }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: python3 .github/test-openclaw-matrix.py
+      - id: select
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          hosts=$(python3 .github/openclaw-matrix.py)
+          echo "hosts=$hosts" >> "$GITHUB_OUTPUT"
   integration:
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        openclaw: ["2026.6.6", "2026.9.2"]
+        openclaw: ${{ fromJSON(needs.versions.outputs.hosts) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          node-version: ${{ (matrix.openclaw == '2026.6.6' || matrix.openclaw == '2026.9.2') && '22' || '24' }}
       - run: npm ci
-      - run: npm install --prefix "$RUNNER_TEMP/openclaw-host" --ignore-scripts --no-audit --no-fund "openclaw@${{ matrix.openclaw }}"
+      - env:
+          HOST_VERSION: ${{ matrix.openclaw }}
+        run: npm install --prefix "$RUNNER_TEMP/openclaw-host" --ignore-scripts --no-audit --no-fund "openclaw@$HOST_VERSION"
       - run: npm run test:integration -- "$RUNNER_TEMP/openclaw-host/node_modules/openclaw"
+
+  # Keep the existing required branch check stable as new host jobs are added.
+  contracts:
+    needs: [unit, versions, integration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          UNIT: ${{ needs.unit.result }}
+          VERSIONS: ${{ needs.versions.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+        run: test "$UNIT" = success && test "$VERSIONS" = success && test "$INTEGRATION" = success

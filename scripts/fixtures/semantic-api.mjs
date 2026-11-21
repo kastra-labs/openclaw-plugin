@@ -12,7 +12,7 @@ export const semanticCases = [
   ["dispatch-unknown", false, "evaluate_error"],
 ];
 
-export function semanticAPI() {
+export function semanticAPI(hostVersion) {
   const calls = [];
   return { calls, handle(req, res, raw, scenario) {
     const body = raw ? JSON.parse(raw) : undefined;
@@ -20,7 +20,7 @@ export function semanticAPI() {
     const send = (status, data) => { res.writeHead(status); res.end(JSON.stringify({ success: true, data })); };
     assert.equal(req.headers.authorization, "Bearer dh_fixture");
     if (req.url === "/v1/semantic/registrations") {
-      assert.deepEqual(body.contract, { complete_content: true, failure_mode: "block", host: "openclaw", host_version: "2026.9.2",
+      assert.deepEqual(body.contract, { complete_content: true, failure_mode: "block", host: "openclaw", host_version: hostVersion,
         max_hold_seconds: 480, phases: ["before_tool_call"], timeout_seconds: 600 });
       assert.equal(body.kind, "agent_hook");
       const canonical = JSON.stringify(Object.fromEntries(Object.entries(body.contract).sort(([a], [b]) => a.localeCompare(b))));

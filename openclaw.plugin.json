@@ -26,6 +26,6 @@
     "holdMaxWaitMs": { "label": "Max hold wait (ms)", "help": "How long to wait for a server-confirmed outcome. A still-pending hold is denied and cancelled at the local deadline. Clamped to 540000." },
     "failMode": { "label": "When Kastra is unreachable", "help": "open = allow (default), closed = block" },
     "governMessages": { "label": "Also govern outbound chat messages", "help": "Adds a policy check to every channel reply (latency cost). Default off." },
-    "semanticChecks": { "label": "Semantic tool argument checks", "help": "Opt in to registered before_tool_call enforcement. Requires OpenClaw 2026.9.2, failMode closed, and a 600-second hook budget. Default off; does not govern tool results or final agent messages." }
+    "semanticChecks": { "label": "Semantic tool argument checks", "help": "Opt in to registered before_tool_call enforcement. Requires a host version qualified by the connected Kastra backend, failMode closed, and a 600-second hook budget. Default off; does not govern tool results or final agent messages." }
   }
 }

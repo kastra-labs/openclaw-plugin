@@ -1,6 +1,6 @@
 {
   "name": "@kastra_labs/openclaw",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Kastra AI governance for OpenClaw — policy-enforced tool calls with human-in-the-loop holds",
   "license": "MIT",

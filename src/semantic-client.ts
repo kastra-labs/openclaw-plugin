@@ -4,15 +4,8 @@ import { normalizeBaseUrl } from "./urls.js";
 import type { HoldEnvelope } from "./types.js";
 
 export const SEMANTIC_VERSION = "semantic-event-v1";
-export const SEMANTIC_HOST_VERSION = "2026.9.2";
 export const SEMANTIC_CONTENT_BYTES = 64 * 1024;
 export const SEMANTIC_TRANSPORT_BYTES = 1024 * 1024;
-// Sorted keys match the backend's canonical JSON contract hash.
-export const SEMANTIC_CONTRACT = Object.freeze({
-  complete_content: true, failure_mode: "block", host: "openclaw", host_version: SEMANTIC_HOST_VERSION,
-  max_hold_seconds: 480, phases: ["before_tool_call"], timeout_seconds: 600,
-});
-const contractHash = createHash("sha256").update(JSON.stringify(SEMANTIC_CONTRACT)).digest("hex");
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export type Registration = { id: string; maxContentBytes: number };
 export type SemanticStage = "check" | "resume" | "dispatch";
@@ -83,10 +76,16 @@ export class SemanticClient extends KastraClient {
     return { status: response.status, data: object(envelope.data) };
   }
 
-  async register(environment: string, signal: AbortSignal): Promise<Registration> {
+  async register(environment: string, hostVersion: string, signal: AbortSignal): Promise<Registration> {
+    // Sorted keys match the backend's canonical JSON contract hash.
+    const contract = {
+      complete_content: true, failure_mode: "block", host: "openclaw", host_version: hostVersion,
+      max_hold_seconds: 480, phases: ["before_tool_call"], timeout_seconds: 600,
+    };
+    const contractHash = createHash("sha256").update(JSON.stringify(contract)).digest("hex");
     const { status, data } = await this.request("/v1/semantic/registrations", {
       contract_version: SEMANTIC_VERSION, kind: "agent_hook", name: "OpenClaw before_tool_call",
-      ...(environment ? { environment } : {}), contract: SEMANTIC_CONTRACT,
+      ...(environment ? { environment } : {}), contract,
     }, signal);
     if ((status !== 200 && status !== 201) || data.contract_version !== SEMANTIC_VERSION ||
         typeof data.registration_id !== "string" || !uuid.test(data.registration_id) ||

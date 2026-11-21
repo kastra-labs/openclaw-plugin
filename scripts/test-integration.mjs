@@ -33,7 +33,8 @@ try {
   mkdirSync(env.HOME);
   mkdirSync(env.OPENCLAW_STATE_DIR);
   const runs = [["test-journal.mjs"], ["test-runtime.mjs"], ["test-gateway.mjs"], ["test-gateway.mjs"]];
-  if (JSON.parse(readFileSync(join(host, "package.json"))).version === "2026.9.2") {
+  // The oldest CI host predates semantic support. Every new candidate must exercise it.
+  if (JSON.parse(readFileSync(join(host, "package.json"))).version !== "2026.6.6") {
     for (const mode of ["semantic", "semantic-rewrite", "semantic-throw", "semantic-timeout"]) runs.push(["test-gateway.mjs", mode]);
   }
   for (const [index, [script, mode]] of runs.entries()) {

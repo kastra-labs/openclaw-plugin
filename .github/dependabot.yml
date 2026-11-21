@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /.github/openclaw-host
+    schedule:
+      interval: cron
+      cronjob: "23 9 * * *"
+    allow:
+      - dependency-name: openclaw
+    commit-message:
+      prefix: "test"

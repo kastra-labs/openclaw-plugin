@@ -77,8 +77,8 @@ govern through Kastra, or you'll be prompted twice for the same action.
 
 ## Semantic tool argument checks
 
-This opt-in requires **OpenClaw 2026.9.2**, an enabled semantic-capable Kastra
-backend, `failMode: "closed"`, and an effective `before_tool_call` timeout of
+This opt-in requires a **stable OpenClaw version qualified by your Kastra backend**
+(2026.9.2 and 2026.11.6 in this release), enabled semantic checks, `failMode: "closed"`, and an effective `before_tool_call` timeout of
 600000 ms. It uses the existing device login and selected environment:
 
 ```json
@@ -93,7 +93,7 @@ dispatch and blocks if another handler is present, even when that handler would
 only observe calls or match a different tool. Native plugins that register tools
 without a `before_tool_call` handler remain compatible.
 
-The plugin registers the pinned host contract through
+The plugin registers the installed host's exact contract through
 `POST /v1/semantic/registrations`, then uses `POST /v1/semantic/check-event` for
 check, approval resume, and dispatch. One UUIDv7 `X-Kastra-Operation-Id` binds all
 stages of the invocation. A prepared check returns HTTP 202 without an ALLOW
@@ -119,6 +119,11 @@ unsupported versions/budgets, contradictory replies, and unavailable services
 block; there is no fallback to `/v1/hooks/evaluate` or `failMode=open`. The plugin owns
 an abort deadline inside the host budget because a host timeout alone does not
 cancel a hook's promise. Ambiguous dispatch responses are not retried.
+
+An unrecognized stable host can attempt registration. If the backend refuses its
+version, the plugin blocks before sending tool arguments. Once the backend
+qualifies a compatible release, this plugin can use it without reinstalling.
+Standard tool policies have no host-version gate.
 
 The journal records `operationId` and `registrationId` for this mode. It does
 not restart an interrupted host invocation or prove that an authorized tool
@@ -271,16 +276,24 @@ Dependency installation may access the public npm registry on a cold cache;
 the gateway and policy fixtures do not require a live service.
 It tests the packaged artifact, not an injected replacement client.
 `npm run smoke` and `node scripts/smoke.mjs` run the same no-login suite.
-CI tests OpenClaw **2026.6.6** and **2026.9.2**; an alternate installed host can
+CI tests OpenClaw **2026.6.6**, **2026.9.2**, and **2026.11.6**; an alternate installed host can
 be tested with `npm run test:integration -- /path/to/openclaw`.
-Semantic qualification runs only on **2026.9.2**; the older host remains a
+Semantic qualification runs on **2026.9.2** and **2026.11.6**; 2026.6.6 remains a
 deterministic-route compatibility target.
+
+Dependabot checks the upstream OpenClaw package daily and opens a
+compatibility PR when a newer stable version is available. Its test-only manifest
+is separate from the plugin SDK dependency. PR CI runs the packed plugin on
+each stable release between the previous and proposed versions. Reviewers use
+the native gateway results to qualify the host with the backend. A passing test
+does not automatically change which contracts a deployed backend accepts.
+
 These tests verify plugin/host contracts, not the real Kastra evaluator, approval
 UI, or provider-side execution.
 
 ## Version & Release
 
-**v0.3.0** is the source version. See [CHANGELOG.md](./CHANGELOG.md) for migration
+**v0.3.1** is the source version. See [CHANGELOG.md](./CHANGELOG.md) for migration
 notes and [npm](https://www.npmjs.com/package/@kastra_labs/openclaw) for the
 published version. Source changes do not update existing installations.
 The Verified release artifact workflow builds, tests, inspects the packed

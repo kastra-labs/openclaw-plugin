@@ -10,16 +10,21 @@ import { semanticAPI, semanticCases } from "./fixtures/semantic-api.mjs";
 const [host, pluginRoot, isolated, mode] = process.argv.slice(2);
 const semantic = mode?.startsWith("semantic") === true;
 const conflict = mode?.slice("semantic-".length);
-if (semantic) assert.equal(JSON.parse(readFileSync(join(host, "package.json"))).version, "2026.9.2");
-const semanticFixture = semanticAPI();
+const hostVersion = JSON.parse(readFileSync(join(host, "package.json"))).version;
+const executionLog = join(process.env.OPENCLAW_STATE_DIR, "sentinel-executions.jsonl");
+writeFileSync(executionLog, "", { mode: 0o600 });
+const readExecutions = () => readFileSync(executionLog, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+const semanticFixture = semanticAPI(hostVersion);
 const here = dirname(fileURLToPath(import.meta.url));
 const token = randomBytes(24).toString("hex");
 let scenario;
 let evaluated = 0;
+const executionsAtDecision = [];
 const api = createServer(async (req, res) => {
   let raw = "";
   for await (const chunk of req) raw += chunk;
   res.setHeader("content-type", "application/json");
+  executionsAtDecision.push(readExecutions().length);
   if (semantic) return semanticFixture.handle(req, res, raw, scenario);
   if (req.url === "/v1/hooks/evaluate") {
     evaluated++;
@@ -95,11 +100,15 @@ try {
   ];
   for (const [name, allow, disposition] of cases) {
     scenario = name; const before = evaluated; const beforeSemantic = semanticFixture.calls.length;
+    const beforeExecutions = readExecutions().length;
+    executionsAtDecision.length = 0;
     const response = await fetch(base + "/tools/invoke", {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ tool: "test_sentinel", args: { scenario }, sessionKey: "main" }), signal: AbortSignal.timeout(15000),
     });
     const body = await response.json();
+    assert.ok(executionsAtDecision.every(count => count === beforeExecutions), `${name}: tool executed before authorization finished`);
+    assert.deepEqual(readExecutions().slice(beforeExecutions), allow ? [name] : [], `${name}: native execution receipts`);
     assert.equal(body.result?.details?.executed === true, allow, JSON.stringify({ scenario, body }));
     if (allow) assert.equal(body.result.details.scenario, scenario, "executed arguments differ from the checked invocation");
     if (semantic) {
@@ -110,7 +119,10 @@ try {
         const events = calls.filter(call => call.stage);
         assert.equal(events.filter(call => call.stage === "check").length, 1);
         assert.equal(new Set(events.map(call => call.operation)).size, 1, "recovery changed operation identity");
-        if (allow) assert.equal(events.at(-1).stage, "dispatch", "native tool ran without dispatch authorization");
+        if (allow) {
+          assert.deepEqual(events.map(event => event.stage),
+            name === "hold-approved" ? ["check", "resume", "dispatch"] : ["check", "dispatch"]);
+        }
       }
     } else assert.equal(evaluated, before + 1, `${name}: sentinel ran without Kastra evaluation; ${JSON.stringify(body)}`);
     if (!disposition) { console.log(`PASS OpenClaw native before_tool_call ${name}: host blocked; no API call or sentinel`); continue; }
