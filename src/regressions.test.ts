@@ -206,7 +206,7 @@ describe("wire validation regressions", () => {
     [202, { success: true, data: { ...envelope, decision: "ALLOW" } }],
     [201, { success: true, data: { decision_id: "d", decision: "ALLOW", reason: "x" } }],
   ])("rejects malformed status/envelope %s %j", async (status, body) => {
-    const client = new KastraClient("https://fixture.test", "t", async () => new Response(JSON.stringify(body), { status: Number(status) }));
+    const client = new KastraClient("https://fixture.test", "t", async () => new Response(JSON.stringify(body), { status: Number(status), headers: { "X-Kastra-Evaluation-Surface": "agent_hook" } }));
     await expect(client.evaluate(req)).rejects.toThrow();
   });
   it.each([
@@ -217,7 +217,7 @@ describe("wire validation regressions", () => {
     { id: "cp-1", status: "expired", on_timeout: "deny", effective_decision: "ALLOW" },
   ])("rejects unreadable or contradictory checkpoint %j", async (state) => {
     const body = { success: true, data: { title: "Review", on_timeout: "allow", expires_at: envelope.expires_at, ...state } };
-    const client = new KastraClient("https://fixture.test", "t", async () => new Response(JSON.stringify(body)));
+    const client = new KastraClient("https://fixture.test", "t", async () => new Response(JSON.stringify(body), { headers: { "X-Kastra-Evaluation-Surface": "agent_hook" } }));
     await expect(client.getCheckpoint("cp-1")).rejects.toThrow();
   });
 });

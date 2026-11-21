@@ -1,4 +1,5 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
 import { createBeforeToolCallHandler, createMessageSendingHandler } from "./handler.js";
 import { DEFAULT_HOOK_TIMEOUT_MS, effectiveHookTimeout } from "./config.js";
 import { createOutcomeRecorder } from "./outcomes.js";
@@ -17,6 +18,8 @@ export default definePluginEntry({
       createBeforeToolCallHandler({
         log,
         recordOutcome,
+        hostVersion: () => api.runtime.version,
+        toolHookCount: () => getGlobalHookRunner()?.getHookCount("before_tool_call"),
         hookTimeoutMs: () => effectiveHookTimeout(api.config.plugins?.entries?.kastra?.hooks, "before_tool_call"),
         apiPluginConfig: () => api.pluginConfig,
       }),

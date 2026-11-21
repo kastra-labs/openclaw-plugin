@@ -37,8 +37,9 @@ const api = createServer(async (req, res) => {
     assert.equal(req.headers.authorization, "Bearer dh_fixture");
     res.setHeader("content-type", "application/json");
     res.setHeader("connection", "close");
-    if (req.url === "/prefix/v1/evaluate") {
+    if (req.url === "/prefix/v1/hooks/evaluate") {
       if (active.apiError) { res.writeHead(active.apiError); res.end(JSON.stringify({ success: false, error: "Fixture HTTP failure" })); return; }
+      if (!active.missingAck) res.setHeader("X-Kastra-Evaluation-Surface", "agent_hook");
       if (active.stallEvaluate) return;
       if (active.hold) {
         res.writeHead(202);
@@ -89,7 +90,9 @@ const cases = [
     { name: `no token ${failMode}`, noToken: true, failMode, allow: failMode === "open", disposition: "unconfigured" },
     { name: `503 ${failMode}`, apiError: 503, failMode, allow: failMode === "open", disposition: "evaluate_error" },
     { name: `401 ${failMode}`, apiError: 401, failMode, allow: failMode === "open", disposition: "evaluate_error" },
-    ...[400, 403, 404, 408, 422, 429].map(apiError => ({ name: `${apiError} ${failMode}`, apiError, failMode, allow: failMode === "open", disposition: "evaluate_error" })),
+    ...[400, 403, 408, 422, 429, 500, 502, 504].map(apiError => ({ name: `${apiError} ${failMode}`, apiError, failMode, allow: failMode === "open", disposition: "evaluate_error" })),
+    ...[404, 405, 501].map(apiError => ({ name: `missing route ${apiError} ${failMode}`, apiError, failMode, disposition: "protocol_error" })),
+    { name: `missing acknowledgement ${failMode}`, missingAck: true, failMode, disposition: "protocol_error" },
     { name: `unknown decision ${failMode}`, decision: "UNKNOWN", failMode, disposition: "protocol_error" },
     { name: `contradictory 403 ${failMode}`, httpStatus: 403, failMode, disposition: "protocol_error" },
     { name: `success false ${failMode}`, success: false, failMode, disposition: "protocol_error" },

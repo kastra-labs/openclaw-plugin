@@ -3,5 +3,5 @@
   "name": "Kastra Test Sentinel",
   "activation": { "onStartup": true },
   "contracts": { "tools": ["test_sentinel"] },
-  "configSchema": { "type": "object", "additionalProperties": false }
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": { "conflictingHook": { "type": "string", "enum": ["rewrite", "throw", "timeout"] } } }
 }

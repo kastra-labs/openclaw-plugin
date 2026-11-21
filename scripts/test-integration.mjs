@@ -32,13 +32,16 @@ try {
   };
   mkdirSync(env.HOME);
   mkdirSync(env.OPENCLAW_STATE_DIR);
-  const runs = ["test-journal.mjs", "test-runtime.mjs", "test-gateway.mjs", "test-gateway.mjs"];
-  for (const [index, script] of runs.entries()) {
+  const runs = [["test-journal.mjs"], ["test-runtime.mjs"], ["test-gateway.mjs"], ["test-gateway.mjs"]];
+  if (JSON.parse(readFileSync(join(host, "package.json"))).version === "2026.9.2") {
+    for (const mode of ["semantic", "semantic-rewrite", "semantic-throw", "semantic-timeout"]) runs.push(["test-gateway.mjs", mode]);
+  }
+  for (const [index, [script, mode]] of runs.entries()) {
     const state = join(temporary, "run-" + index);
     mkdirSync(state);
     const runEnv = { ...env, OPENCLAW_STATE_DIR: join(state, "state"), OPENCLAW_CONFIG_PATH: join(state, "openclaw.json") };
     mkdirSync(runEnv.OPENCLAW_STATE_DIR);
-    process.stdout.write(run([process.execPath, join(root, "scripts", script), host, plugin, state], root, runEnv));
+    process.stdout.write(run([process.execPath, join(root, "scripts", script), host, plugin, state, ...(mode ? [mode] : [])], root, runEnv));
   }
   console.log(`Packed plugin ${packed.version}: installation, host, and gateway checks passed`);
 } finally {

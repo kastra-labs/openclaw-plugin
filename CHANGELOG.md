@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Add default-off `semanticChecks` for device-registered tool argument checks on
+  OpenClaw 2026.9.2. Require closed failure mode, the 600-second host budget, and
+  Kastra as the sole `before_tool_call` handler. Other versions or conflicting
+  hooks block instead of weakening the exact-argument contract.
+- Require separate server dispatch authorization after check or human approval;
+  bind stages to one operation and registration. Bound input and response size,
+  block redirects and contradictory replies, and abort in-flight work before the
+  host timeout. Record operation/registration IDs without arguments or tokens.
+- Add local packed-plugin/native gateway cases for ALLOW, DENY, HOLD, outages,
+  ambiguous dispatch, hook conflicts, and the host's error/timeout behavior.
+  Tool results and final agent messages are outside this native hook opt-in.
+
 ## 0.2.0
 
 ### Safety And Compatibility Changes

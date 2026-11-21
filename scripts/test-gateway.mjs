@@ -5,18 +5,26 @@ import { createServer } from "node:http";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { semanticAPI, semanticCases } from "./fixtures/semantic-api.mjs";
 
-const [host, pluginRoot, isolated] = process.argv.slice(2);
+const [host, pluginRoot, isolated, mode] = process.argv.slice(2);
+const semantic = mode?.startsWith("semantic") === true;
+const conflict = mode?.slice("semantic-".length);
+if (semantic) assert.equal(JSON.parse(readFileSync(join(host, "package.json"))).version, "2026.9.2");
+const semanticFixture = semanticAPI();
 const here = dirname(fileURLToPath(import.meta.url));
 const token = randomBytes(24).toString("hex");
 let scenario;
 let evaluated = 0;
 const api = createServer(async (req, res) => {
-  for await (const _ of req) { /* Drain the fixture request. */ }
+  let raw = "";
+  for await (const chunk of req) raw += chunk;
   res.setHeader("content-type", "application/json");
-  if (req.url === "/v1/evaluate") {
+  if (semantic) return semanticFixture.handle(req, res, raw, scenario);
+  if (req.url === "/v1/hooks/evaluate") {
     evaluated++;
     if (scenario === "unavailable") { res.writeHead(503); res.end("{}"); return; }
+    res.setHeader("X-Kastra-Evaluation-Surface", "agent_hook");
     if (scenario.startsWith("hold")) {
       res.writeHead(202); res.end(JSON.stringify({ success: true, data: {
         decision: "HOLD", checkpoint_id: "cp-gateway", title: "Fixture", on_timeout: "allow",
@@ -59,8 +67,8 @@ try {
     plugins: { allow: ["kastra", "kastra-test-sentinel"], slots: { memory: "none" },
       load: { paths: [pluginRoot, join(here, "fixtures/sentinel")] },
       entries: {
-        kastra: { enabled: true, config: { apiBaseUrl: `http://127.0.0.1:${api.address().port}`, deviceToken: "dh_fixture", failMode: "closed", holdMaxWaitMs: 100 } },
-        "kastra-test-sentinel": { enabled: true },
+        kastra: { enabled: true, config: { apiBaseUrl: `http://127.0.0.1:${api.address().port}`, deviceToken: "dh_fixture", failMode: "closed", holdMaxWaitMs: 100, ...(semantic ? { semanticChecks: true } : {}) } },
+        "kastra-test-sentinel": { enabled: true, ...(conflict ? { config: { conflictingHook: conflict } } : {}) },
       },
     },
   }));
@@ -79,23 +87,40 @@ try {
     await new Promise(done => setTimeout(done, 250));
   }
   assert.ok(ready, output.slice(-10000));
-  for (const [name, allow, disposition] of [
+  const cases = semantic ? (conflict ? [[conflict, false, conflict === "rewrite" ? "protocol_error" : undefined]] : semanticCases) : [
     ["allow", true, "policy_allow"], ["deny", false, "policy_deny"], ["unavailable", false, "evaluate_error"],
     ["allow-no-audit", true, "policy_allow"],
     ["malformed", false, "protocol_error"], ["hold-approved", true, "hold_approved"], ["hold-denied", false, "hold_denied"],
     ["hold-expired", true, "hold_expired"], ["hold-pending", false, "hold_deadline"],
-  ]) {
-    scenario = name; const before = evaluated;
+  ];
+  for (const [name, allow, disposition] of cases) {
+    scenario = name; const before = evaluated; const beforeSemantic = semanticFixture.calls.length;
     const response = await fetch(base + "/tools/invoke", {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ tool: "test_sentinel", args: { scenario }, sessionKey: "main" }), signal: AbortSignal.timeout(15000),
     });
     const body = await response.json();
     assert.equal(body.result?.details?.executed === true, allow, JSON.stringify({ scenario, body }));
-    assert.equal(evaluated, before + 1, `${name}: sentinel ran without Kastra evaluation; ${JSON.stringify(body)}`);
+    if (allow) assert.equal(body.result.details.scenario, scenario, "executed arguments differ from the checked invocation");
+    if (semantic) {
+      assert.equal(evaluated, 0, "semantic mode fell back to legacy evaluation");
+      const calls = semanticFixture.calls.slice(beforeSemantic);
+      if (conflict) assert.equal(calls.length, 0, "conflicting native hook reached remote authorization");
+      else {
+        const events = calls.filter(call => call.stage);
+        assert.equal(events.filter(call => call.stage === "check").length, 1);
+        assert.equal(new Set(events.map(call => call.operation)).size, 1, "recovery changed operation identity");
+        if (allow) assert.equal(events.at(-1).stage, "dispatch", "native tool ran without dispatch authorization");
+      }
+    } else assert.equal(evaluated, before + 1, `${name}: sentinel ran without Kastra evaluation; ${JSON.stringify(body)}`);
+    if (!disposition) { console.log(`PASS OpenClaw native before_tool_call ${name}: host blocked; no API call or sentinel`); continue; }
     const last = readFileSync(join(process.env.OPENCLAW_STATE_DIR, "kastra/outcomes.jsonl"), "utf8").trim().split("\n").at(-1);
     assert.equal(JSON.parse(last).disposition, disposition);
-    console.log(`PASS gateway /tools/invoke: ${name}`);
+    if (semantic && !conflict) {
+      assert.equal(JSON.parse(last).registrationId, "018ff020-1234-7123-8123-123456789abc");
+      assert.match(JSON.parse(last).operationId, /^[0-9a-f-]{36}$/);
+    }
+    console.log(`PASS gateway /tools/invoke${semantic ? " semantic" : ""}: ${name}`);
   }
 } catch (error) {
   throw new Error(`${error}\n${output.slice(-10000).split(token).join("[fixture-token]")}`);

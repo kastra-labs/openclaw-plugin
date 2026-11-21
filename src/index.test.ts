@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("openclaw/plugin-sdk/plugin-entry", () => ({ definePluginEntry: (entry: unknown) => entry }));
+vi.mock("openclaw/plugin-sdk/plugin-runtime", () => ({ getGlobalHookRunner: () => ({ getHookCount: () => 1 }) }));
 import plugin from "./index.js";
 import { effectiveHookTimeout } from "./config.js";
 

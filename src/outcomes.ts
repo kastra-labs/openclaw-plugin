@@ -23,6 +23,8 @@ export type Outcome = {
   decisionId?: string;
   ruleId?: string;
   checkpointId?: string;
+  operationId?: string;
+  registrationId?: string;
   status?: string;
   resolvedBy?: string;
   resolvedByEmail?: string;
@@ -42,7 +44,7 @@ function serializeOutcome(outcome: Outcome): Buffer {
   const record: Record<string, unknown> = { version: 1, id: randomUUID(), timestamp: new Date().toISOString() };
   // An explicit allowlist prevents accidental credential, input, or error-object logging.
   for (const key of ["hook", "decision", "disposition", "toolName", "toolCallId", "runId", "sessionKey",
-    "channelId", "accountId", "conversationId", "decisionId", "ruleId", "checkpointId", "status",
+    "channelId", "accountId", "conversationId", "decisionId", "ruleId", "checkpointId", "operationId", "registrationId", "status",
     "resolvedBy", "resolvedByEmail", "failMode"] as const) {
     const value = outcome[key];
     if (typeof value === "string") record[key] = value.slice(0, 512);
