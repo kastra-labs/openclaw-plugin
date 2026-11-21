@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Add default-off `semanticChecks` for device-registered tool argument checks on
   OpenClaw 2026.9.2. Require closed failure mode, the 600-second host budget, and
