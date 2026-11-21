@@ -7,7 +7,8 @@ import type { Outcome } from "./outcomes.js";
 import { SEMANTIC_TRANSPORT_BYTES, SemanticClient, newOperationId } from "./semantic-client.js";
 import type { HoldEnvelope } from "./types.js";
 
-const qualifiedHostVersions = ["2026.9.2", "2026.11.6"];
+// Registration binds the installed stable version to the backend’s qualified contract.
+const stableHostVersion = /^[1-9]\d{3}\.(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,4})$/;
 
 export type SemanticTransport = Pick<SemanticClient, "register" | "event" | "getCheckpoint" | "heartbeat" | "cancel">;
 export type SemanticOptions = {
@@ -22,7 +23,7 @@ export type SemanticOptions = {
 
 export async function authorizeSemanticTool(cfg: ResolvedConfig, event: HookEvent, opts: SemanticOptions): Promise<Partial<Outcome> & Pick<Outcome, "decision" | "disposition">> {
   const hostVersion = opts.hostVersion;
-  if (!hostVersion || !qualifiedHostVersions.includes(hostVersion)) throw new KastraProtocolError();
+  if (typeof hostVersion !== "string" || !stableHostVersion.test(hostVersion)) throw new KastraProtocolError();
   const assertHost = () => {
     opts.signal.throwIfAborted();
     // The pinned host isolates each handler's original event; priority alone

@@ -14,7 +14,7 @@ function registrationData(contract: unknown) {
 }
 function fixture(options: {
   respond?: (body: any, init: RequestInit) => Response | Promise<Response>;
-  registration?: Record<string, unknown>; state?: string; deps?: Partial<HandlerDeps>; config?: Record<string, unknown>;
+  registrationStatus?: number; registration?: Record<string, unknown>; state?: string; deps?: Partial<HandlerDeps>; config?: Record<string, unknown>;
 } = {}) {
   const requests: { path: string; body: any; init: RequestInit }[] = [];
   const records: Outcome[] = [];
@@ -23,7 +23,7 @@ function fixture(options: {
     const path = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     requests.push({ path, body, init });
-    if (path.endsWith("registrations")) return ok({ ...registrationData(body.contract), ...options.registration });
+    if (path.endsWith("registrations")) return ok({ ...registrationData(body.contract), ...options.registration }, options.registrationStatus ?? 200);
     if (path.endsWith("check-event")) return options.respond?.(body, init) ?? ok({
       contract_version: SEMANTIC_VERSION, registration_id: registration,
       operation_id: new Headers(init.headers).get("X-Kastra-Operation-Id"), stage: body.stage,
@@ -54,7 +54,7 @@ function held(body: any, init: RequestInit) {
 afterEach(() => vi.useRealTimers());
 
 describe("registered OpenClaw semantic enforcement", () => {
-  it.each(["2026.9.2", "2026.11.6"])("authorizes exact arguments and registers the installed host %s", async hostVersion => {
+  it.each(["2026.9.2", "2026.11.6", "2027.1.3"])("authorizes exact arguments and registers the installed host %s", async hostVersion => {
     const f = fixture({ deps: { hostVersion: () => hostVersion } });
     expect(await f.handler(event)).toBeUndefined();
     expect(f.requests.map(r => r.body?.stage ?? "register")).toEqual(["register", "check", "dispatch"]);
@@ -89,9 +89,15 @@ describe("registered OpenClaw semantic enforcement", () => {
     expect(f.requests.some(r => r.body?.stage === "dispatch")).toBe(false);
     expect(f.records[0].decision).toBe("DENY");
   });
+  it("blocks an unqualified release when the server refuses registration, before sending arguments", async () => {
+    const f = fixture({ deps: { hostVersion: () => "2027.1.3" }, registrationStatus: 422 });
+    expect(await f.handler(event)).toMatchObject({ block: true });
+    expect(f.requests.map(request => request.path)).toEqual(["/v1/semantic/registrations"]);
+    expect(f.requests[0].body.contract.host_version).toBe("2027.1.3");
+    expect(f.records[0].decision).toBe("DENY");
+    expect(f.legacy).not.toHaveBeenCalled();
+  });
   it.each([
-    ["unsupported host", { hostVersion: () => "2026.6.6" }, {}],
-    ["next patch", { hostVersion: () => "2026.11.7" }, {}],
     ["prerelease", { hostVersion: () => "2026.11.6-rc.1" }, {}],
     ["missing host", { hostVersion: () => undefined }, {}],
     ["conflicting tool hook", { toolHookCount: () => 2 }, {}],

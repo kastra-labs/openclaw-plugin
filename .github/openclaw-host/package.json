@@ -1,0 +1,7 @@
+{
+  "name": "openclaw-compatibility-candidate",
+  "private": true,
+  "devDependencies": {
+    "openclaw": "2026.11.6"
+  }
+}
